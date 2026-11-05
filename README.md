@@ -15,9 +15,13 @@ Design and on-air testing by KW4EX. Version 2.40.
 - Ready-made Thetis windows (Telemetry, Controls, Knob) with your own item order and titles.
 - Starting a new bridge closes one that is already running; `Stop_Bridge.bat` closes it cleanly.
 
+## Download
+
+**Start at the [Releases page](https://github.com/kw4ex/kpa1500-sdr-bridge/releases/latest).** The top entry marked **Latest** is the newest version; older versions stay listed below it. In the **Assets** list click **Install_KPA1500_SDR_Bridge.bat** (not "Source code"). Step-by-step download instructions are on the release page.
+
 ## Install (Windows)
 1. Install Python 3.8 or newer from python.org (tick Add Python to PATH).
-2. Download `Install_KPA1500_SDR_Bridge.bat` and double-click it. It asks a few short questions and installs into its own `KPA1500_SDR_Bridge` subfolder (suggested: `C:\RadioScripts`).
+2. Download `Install_KPA1500_SDR_Bridge.bat` from the Releases page and double-click it. It asks a few short questions and installs into its own `KPA1500_SDR_Bridge` subfolder (suggested: `C:\RadioScripts`).
 3. Or copy the files into a folder yourself, run `py -m pip install pyserial` (LP-100A and knob), and double-click `start_kpa_sdr_bridge.bat`.
 
 ## NereusSDR settings (once)
@@ -55,7 +59,7 @@ Setup > Serial/Network/Midi CAT > Network tab > TCI Server: Bind IP:Port `127.0.
 - `KPA_Network_Check.bat`, `kpa_netcheck.ps1` read-only network check
 - `KPA1500_Bridge_Help.html` the full help with every setting
 
-The older Thetis-only program is at github.com/kw4ex/kpa1500-thetis-bridge.
+The older Thetis-only program is at github.com/kw4ex/kpa1500-thetis-bridge (it keeps working; run only one of the two).
 
 ## Status
 Tested against simulated amplifier and radio programs and on one station (Thetis and NereusSDR). Reports are welcome.
