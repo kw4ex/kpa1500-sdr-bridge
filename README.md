@@ -1,5 +1,7 @@
 # KPA1500 SDR Bridge
 
+**Windows only.** This program runs on Windows 10 and 11 only. The installer and helper files are Windows batch files and will not work on a Mac or Linux.
+
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
 Design and on-air testing by KW4EX. Version 2.40.
