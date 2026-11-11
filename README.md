@@ -1,6 +1,6 @@
 # KPA1500 SDR Bridge
 
-**Windows only.** This program runs on Windows 10 and 11 only. The installer and helper files are Windows batch files and will not work on a Mac or Linux.
+**Windows is the main version** (Windows 10 and 11). A separate **experimental, untested Mac and Linux version** for NereusSDR is on the [Releases page](https://github.com/kw4ex/kpa1500-sdr-bridge/releases) (marked Pre-release) and in the `mac-linux` folder; see [Mac and Linux](#mac-and-linux-experimental-untested). The Windows installer and `.bat` files do not work on a Mac or Linux.
 
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
@@ -65,6 +65,17 @@ Setup > Serial/Network/Midi CAT > Network tab > TCI Server: Bind IP:Port `127.0.
 - `KPA1500_Bridge_Help.html` the full help with every setting
 
 The older Thetis-only program is at github.com/kw4ex/kpa1500-thetis-bridge (it keeps working; run only one of the two).
+
+## Mac and Linux (experimental, untested)
+
+**Not yet tried on a real Mac, Linux computer, KPA1500 or radio.** It passed the program's self-test and an install, start, stop and uninstall run on Linux with simulated equipment. Use `--dry-run` first (nothing is sent to the amplifier) and a dummy load for first transmissions. Thetis, Thetis HL2 and SDR-VST3 are Windows programs: from a Mac or Linux the bridge can reach them on another computer, and there are no Thetis windows.
+
+1. Download `mac-linux/Install_KPA1500_SDR_Bridge.sh` and `mac-linux/README_Mac_Linux.txt` (or the same files from the Pre-release).
+2. Open Terminal, type `bash ` (with a space), drag the `.sh` file into the window and press Enter.
+3. Answer the questions (Enter accepts the answer in brackets). Follow `README_Mac_Linux.txt` for the NereusSDR settings and the safe first test.
+4. To remove everything later: run `uninstall_kpa1500_sdr_bridge.sh` from the install folder.
+
+Design and on-air testing by KW4EX. No warranty, use at your own risk. Not made, approved or supported by Elecraft, FlexRadio, Telepost, Thetis or NereusSDR.
 
 ## Status
 Tested against simulated amplifier and radio programs and on one station (Thetis and NereusSDR). Reports are welcome.

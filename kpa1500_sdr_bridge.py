@@ -526,7 +526,12 @@ def arp_lookup(ip):
         out = subprocess.run(["arp", "-a"], capture_output=True, text=True,
                              timeout=5).stdout
     except Exception:
-        return None
+        out = ""
+    if not out and os.name != "nt":                 # newer Linux has no arp: use ip neigh
+        try:
+            out = subprocess.run(["ip", "neigh", "show"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return None
     for line in out.splitlines():
         if re.search(r"(?<![0-9.])%s(?![0-9.])" % re.escape(ip), line):
             m = re.search(r"([0-9a-fA-F]{1,2}[-:]){5}[0-9a-fA-F]{1,2}", line)
@@ -776,7 +781,7 @@ def list_serial_ports():
 
 
 VALID_BAUDS = (9600, 19200, 38400, 57600, 115200)
-PORT_RE = re.compile(r"COM\d{1,3}|/dev/(tty|cu)[\w.\-]+", re.I)
+PORT_RE = re.compile(r"COM\d{1,3}|/dev/(tty|cu)[\w.\-]+|/dev/serial/by-(id|path)/[\w.:\-]+", re.I)
 
 
 def default_serial_opener(port, baud):
@@ -1300,8 +1305,18 @@ def find_listener_pid(port):
             out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=15,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
             return pid_from_netstat(out, port)
-        out = subprocess.run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN", "-t"],
-                             capture_output=True, text=True, timeout=15).stdout.split()
+        try:
+            out = subprocess.run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN", "-t"],
+                                 capture_output=True, text=True, timeout=15).stdout.split()
+        except OSError:                              # Linux without lsof: use ss
+            out = []
+            txt = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=15).stdout
+            for line in txt.splitlines():
+                if re.search(r":%d\s" % port, line):
+                    m = re.search(r"pid=(\d+)", line)
+                    if m:
+                        out = [m.group(1)]
+                        break
         return int(out[0]) if out else None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -3932,6 +3947,16 @@ class Bridge:
         self.start_mmio()
         if (self.a.amp_ip or "").lower() == "auto":
             self.startup_discovery()
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            import signal as _sg                      # Mac/Linux: closing the Terminal or "stop" ends it cleanly
+
+            def _term(_n, _f):
+                raise KeyboardInterrupt
+            for _s in ("SIGTERM", "SIGHUP"):
+                try:
+                    _sg.signal(getattr(_sg, _s), _term)
+                except (ValueError, OSError, AttributeError):
+                    pass
         print("Press H for keyboard commands, W to open the full help. Ctrl+C or Q to quit.")
         print("Log file: %s\n" % (
             ("%s (kept under %s)" % (self.a.logfile, ("%g MB" % self.log_max_mb)
@@ -4349,6 +4374,18 @@ def help_sections():
         _P("**Auto-stop:** a tune started with the bridge TUNE button stops by itself after 20 s "
            "(change it in Settings > Safety; 0 = never). The bridge never changes the tune power: "
            "set it in Thetis as usual. With Standby-on-Tune off, TUNE leaves the amp as it is."),
+    ]))
+    S.append(("maclinux", "Mac and Linux (experimental)", [
+        _P("The bridge also runs on a Mac or Linux computer, with NereusSDR on that computer, or with "
+           "Thetis on another computer (use --tci-host ADDRESS --radio thetis). It was tested only on "
+           "Linux with simulated equipment so far. The Thetis container windows are Windows-only."),
+        _UL("**Install:** open Terminal, type `bash `, drag Install_KPA1500_SDR_Bridge.sh into the window, "
+            "press Enter and answer the questions. The default folder is RadioScripts in your home folder.",
+            "**Start / stop:** start_kpa_sdr_bridge.sh and stop_bridge.sh (on a Mac the .command files "
+            "can be double-clicked). Options are in kpa1500_start.conf.",
+            "**Serial ports** look like /dev/cu.usbserial-XXXX (Mac) or /dev/ttyUSB0 (Linux).",
+            "**Remove everything:** run uninstall_kpa1500_sdr_bridge.sh in the install folder; it asks "
+            "before each part."),
     ]))
     S.append(("drive", "Over-drive protection (drive limit)", [
         _P("Too much drive can damage the amplifier. This option lets you set **one limit, in watts, "

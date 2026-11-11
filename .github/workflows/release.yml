@@ -18,6 +18,10 @@ on:
       assets:
         description: "Files to attach, separated by | (paths in the repository)"
         required: true
+      prerelease:
+        description: "Mark as a Pre-release (true or false)"
+        required: false
+        default: "false"
       zip_name:
         description: "Optional: name of a .zip to build from zip_files and attach"
         required: false
@@ -57,5 +61,5 @@ jobs:
             gh release upload "$TAG" dl/* --clobber
             gh release edit "$TAG" --title "$TITLE" --notes-file "$notes"
           else
-            gh release create "$TAG" dl/* --target "${{ github.sha }}" --title "$TITLE" --notes-file "$notes" --latest="${{ inputs.latest }}"
+            gh release create "$TAG" dl/* --target "${{ github.sha }}" --title "$TITLE" --notes-file "$notes" --latest="${{ inputs.latest }}" $( [ "${{ inputs.prerelease }}" = "true" ] && echo --prerelease )
           fi
