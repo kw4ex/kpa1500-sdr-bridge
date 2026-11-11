@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kpa1500_sdr_bridge.py  v2.40  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
+kpa1500_sdr_bridge.py  v2.41  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
 ==============================================================================
 Concept, design and on-air testing: KW4EX.
 
@@ -29,6 +29,12 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
+  2.41 (2026-11-11)  The panel header shows which radio program the bridge found (Thetis or NereusSDR).
+                     Panel and help say "Thetis, Thetis HL2 or SDR-VST3" where they only said Thetis;
+                     the Thetis windows section says it is not for NereusSDR (use the Applet). The
+                     installer always asks which radio program you use (also when it keeps your earlier
+                     options), shows which of Thetis, Thetis HL2, SDR-VST3 it finds, and repeats the
+                     NereusSDR settings at the end. Help: "Using NereusSDR?" notes.
   2.40 (2026-10-31)  NereusSDR support. One bridge now works with Thetis OR NereusSDR (one at a time;
                      it finds out which by itself, or choose in the panel / --radio). NereusSDR has no
                      TCI command run_cat_ex, so the FlexControl knob's CAT commands go to NereusSDR's
@@ -135,8 +141,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.40"
-BUILD_DATE = "2026-10-31"
+VERSION = "2.41"
+BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -3928,7 +3934,9 @@ def help_sections():
                                                  |
                    Browser panel (http://127.0.0.1:8080)   Applet window (/applet)
 """),
-        _NOTE("The bridge never keys your transmitter. You press TUNE or PTT in Thetis as usual."),
+        _NOTE("The bridge never keys your transmitter. You press TUNE or PTT in your radio program as usual."),
+        _NOTE("**Using NereusSDR?** It needs its TCI server on port 50001 and TCP/IP CAT on port 13013 with VFO A bound to "
+              "Slice A. The steps are in {sec:nereus}. NereusSDR does not use the Thetis windows; use the Applet window."),
     ]))
     S.append(("requirements", "2. What you need", [
         _TABLE(["Item", "Needed", "Notes"], [
@@ -4352,7 +4360,9 @@ def help_sections():
     ]))
     S.append(("containers", "11. The Thetis windows (meters and buttons)", [
         _P("The package includes two ready-made Thetis windows, called **containers**. They float "
-           "on top of Thetis; drag them wherever you like or dock them into the Thetis screen."),
+           "on top of Thetis; drag them wherever you like or dock them into the Thetis screen. They work in "
+           "**Thetis, Thetis HL2 and SDR-VST3** (whichever are installed; the setup asks which). "
+           "**NereusSDR does not use them**: it has the Applet window instead ({sec:nereus})."),
         _IMG("thetis_overview", "Thetis with the two KPA1500 windows (right): Controls on top, Telemetry below."),
         _P("**Put them into Thetis (one double-click):**"),
         _OL("Make sure the bridge is installed (the installer does this).",
@@ -5127,6 +5137,8 @@ button.danger{border-color:var(--bad);color:var(--bad)}
 #ampbadge.on{background:var(--ok);color:#fff;border-color:var(--ok)}
 #ampbadge.off{background:var(--bad);color:#fff;border-color:var(--bad)}
 #ampbadge.nolink{background:var(--warn);color:#000;border-color:var(--warn)}
+#radiobadge{font-size:.8rem;font-weight:700;padding:.1rem .5rem;border-radius:1rem;border:1px solid var(--line)}
+#radiobadge.on{background:var(--acc);color:#000;border-color:var(--acc)}
 /* edit mode */
 .tools{display:none;position:absolute;top:-.55rem;right:.3rem;gap:.15rem;z-index:3}
 .editing .tools{display:flex}
@@ -5181,7 +5193,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
 .tbtns button:hover{border-color:#fff}
 .editing #thetis{pointer-events:none;opacity:.8}
 </style></head><body>
-<div class="top"><h1>KPA1500 &amp; LP-100A</h1><span id="ver" class="small dry"></span><span id="ampbadge" title="Is the amplifier answering at its network address?">AMP ?</span><span id="dry" class="small dry"></span>
+<div class="top"><h1>KPA1500 &amp; LP-100A</h1><span id="ver" class="small dry"></span><span id="ampbadge" title="Is the amplifier answering at its network address?">AMP ?</span><span id="radiobadge" title="Which radio program the bridge is connected to. Thetis here means Thetis, Thetis HL2 or SDR-VST3.">Radio ?</span><span id="dry" class="small dry"></span>
 <a id="helplink" class="hbtn" href="/help" target="_blank" rel="noopener">Help</a>
 <button id="gear" aria-label="Settings and layout">Settings</button></div>
 <div id="offline">Bridge offline - retrying...</div>
@@ -5227,7 +5239,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <label title="Put the amp in STANDBY for the radio's TUNE and back to OPERATE afterwards"><input type="checkbox" id="d_sot"> Standby-on-Tune</label>
   <label title="A TUNE started with the bridge TUNE button stops by itself after this time">Auto-stop TUNE after <input type="text" id="d_tunemax" size="3" inputmode="numeric"> s (0 = never)</label>
  </div>
- <div class="dh">No antenna? check <span class="small">(receive level from Thetis)</span></div>
+ <div class="dh">No antenna? check <span class="small">(receive level from the radio program)</span></div>
  <div class="drow">
   <label><input type="checkbox" id="d_na"> Check is on</label>
   <label>When the level is too low <select id="d_naact"><option value="warn">Warn only</option><option value="standby">Warn and keep the amp in STANDBY</option></select></label>
@@ -5239,7 +5251,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <button id="d_nadef">Default limits</button>
   <span class="small">Limit per band in dBm: a lower receive level shows the warning. Empty = no check on that band. Learn sets the limit to the level measured with NO antenna + 6 dB.</span>
  </div>
- <div class="dh">Thetis windows <span class="small">(KPA1500 Telemetry and KPA1500 Controls)</span></div>
+ <div class="dh">Thetis windows <span class="small">(KPA1500 Telemetry, Controls and Knob, inside Thetis, Thetis HL2 or SDR-VST3. NereusSDR does not use these: use the Applet window.)</span></div>
  <div class="small">Choose what each Thetis window shows and in which order. The Thetis look here shows it at once. Arrows move an item, x takes it out, + puts it back. In a title, <b>{ver}</b> shows the bridge version.</div>
  <div class="dsub">Telemetry window</div>
  <div class="drow"><label>Title <input type="text" id="d_tmtitle" size="32" maxlength="48" autocomplete="off"></label><span class="small">(shown when the "Title line" item is in the list)</span></div>
@@ -5701,7 +5713,9 @@ function setBar(r,f,warn,bad){if(!r.fill)return;f=clamp(f||0,0,1);r.fill.style.w
 function val(r,txt,cls){r.val.textContent=txt;r.val.className='t-val'+(cls?' '+cls:'');}
 function update(s){
  const lp=s.lp,full=L.settings.labels==='full';
- {const b=$('ampbadge'),dn=$('ampdown');
+ {const rb=$('radiobadge');if(rb){rb.textContent=s.radio_name?s.radio_name:'Radio ?';rb.classList.toggle('on',!!s.radio_name);
+   rb.title=s.radio==='nereus'?'NereusSDR (TCI port 50001, CAT port 13013)':(s.radio_name?'Thetis, Thetis HL2 or SDR-VST3 (TCI port 50001)':'No radio program found yet: start it and switch its TCI server on');}
+  const b=$('ampbadge'),dn=$('ampdown');
   b.textContent='AMP '+(s.power||'?')+(s.amp&&s.mode?' - '+s.mode:'');
   b.className=s.amp?'on':(s.power==='OFF'?'off':'nolink');
   if(s.amp){dn.style.display='none';}
@@ -5726,7 +5740,7 @@ function update(s){
    case 'rx':{const na=s.noant||{};
     val(r,(na.dbm!=null&&na.live)?na.dbm.toFixed(0)+' dBm'+(full&&na.band?' ('+na.band+' m)':''):'--',
      na.warn?'bad':(na.state==='dummy'?'warn':(na.state==='ok'?'good':'')));
-    r.tile.title={off:'No-antenna check is off',na:'No receive level from Thetis',nolimit:'No limit set for this band',
+    r.tile.title={off:'No-antenna check is off',na:'No receive level from the radio program',nolimit:'No limit set for this band',
      ok:'Receive level is normal',low:'Below the limit - no antenna?',tx:'Transmitting with no antenna?',dummy:'DUMMY OK pressed'}[na.state]||'';
     break;}
    case 'ampf':{const f=s.follow||'';
@@ -5987,7 +6001,7 @@ $('d_kwgap').addEventListener('click',()=>{const o=edCur(EDIT.kw);o.order.push('
 $('d_kwdef').addEventListener('click',()=>{if(confirm('Put the Knob window back in the standard order?'))send('thetis_knobwin_default');});
 $('d_kwon').addEventListener('change',e=>send('thetis_knobwin',{enabled:e.target.checked}));
 $('d_tmtitle').addEventListener('change',e=>{const o=edCur(EDIT.tm);o.title=e.target.value.trim();edSave(EDIT.tm,o);});
-$('d_tbbuild').addEventListener('click',()=>{if(confirm('Open the Thetis setup now? It rebuilds both KPA1500 windows in Thetis with this button order.\n\nThe setup window offers to close Thetis for you and to start it again afterwards. A backup is made first.'))send('thetis_rebuild');});
+$('d_tbbuild').addEventListener('click',()=>{if(confirm('Open the Thetis setup now? It rebuilds the KPA1500 windows with this button order.\n\nThe setup window asks WHICH program to rebuild them in (Thetis, Thetis HL2 or SDR-VST3, whichever are installed), offers to close it for you and to start it again afterwards. A backup is made first.'))send('thetis_rebuild');});
 $('d_ampfind').addEventListener('click',ampFind);
 $('d_ampuse').addEventListener('click',()=>send('amp_ip',{ip:$('d_ampip').value.trim()}));
 $('d_lpconnect').addEventListener('click',()=>lpSet($('d_lpport').value.trim().replace(/^com/i,'COM')));
