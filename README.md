@@ -4,7 +4,7 @@
 
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
-Design and on-air testing by KW4EX. Version 2.41.
+Design and on-air testing by KW4EX. Version 2.42.
 
 ## What it does
 - Follows the radio frequency so the amplifier changes band by itself.
@@ -14,12 +14,14 @@ Design and on-air testing by KW4EX. Version 2.41.
 - No-antenna protection: warn, warn and go to STANDBY, or refuse TUNE (or off).
 - Works with Thetis or NereusSDR, one at a time; it finds out which one is running.
 - **Applet window**: meters, buttons, knob lines and LP-100A in one small window. Top line with frequency, Operate/Standby and Power. Colours, size, zoom, shrink-to-fit, sections and order are set from the window.
-- Ready-made Thetis windows (Telemetry, Controls, Knob) with your own item order and titles.
+- Ready-made Thetis windows (Telemetry, Controls, Knob) with your own item order and titles, and a choice of button look (Standard or Legacy) for the Controls window.
 - Starting a new bridge closes one that is already running; `Stop_Bridge.bat` closes it cleanly.
 
 ## Download
 
 **Start at the [Releases page](https://github.com/kw4ex/kpa1500-sdr-bridge/releases/latest).** The top entry marked **Latest** is the newest version; older versions stay listed below it. In the **Assets** list click **Install_KPA1500_SDR_Bridge.bat** (not "Source code"). Step-by-step download instructions are on the release page.
+
+**Full guide:** [Install and User Guide (PDF)](docs/guides/KPA1500-SDR-Bridge-guide.pdf) - step by step install, every setting, troubleshooting. It is also in the Assets list of each release.
 
 ## Install (Windows)
 1. Install Python 3.8 or newer from python.org (tick Add Python to PATH).

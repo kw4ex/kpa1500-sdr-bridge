@@ -819,7 +819,7 @@ class Builder:
         s.set_num("led_process_when_hidden", True)
         return self._out(s, "LED")
 
-    def buttons(self, spec, columns, out4):
+    def buttons(self, spec, columns, out4, style="default"):
         """spec: list of dicts on, off, msg_on, msg_off, led(4char or None)"""
         s = self._tpl("OTHER_BUTTONS")
         s.set_num("buttonbox_columns", columns)
@@ -831,6 +831,12 @@ class Builder:
         s.set_num("buttonbox_font_scale", 0.42)
         s.set_str("_font_family_1", "Verdana")
         s.set_num("_font_size_1", 12.0)
+        st = BUTTON_STYLES.get(style)
+        if st:
+            for key in ("fill", "off", "border", "hover", "on", "font"):
+                s.set_color("buttonbox_%s_colour" % key, st[key])
+            s.set_num("buttonbox_radius", st["radius"])
+            s.set_num("buttonbox_border", st["borderw"])
         for n in range(31):
             ms = s.node("buttonbox_other_buttons_macro_settings_%d" % n)
             ms = copy.deepcopy(ms)
@@ -1483,6 +1489,19 @@ def read_meter_layout(path):
     return order, clean_title(tm.get("title"), TITLE_TELE)
 
 
+# Button looks for the Controls window. "default" = the look the windows always had (nothing is changed);
+# "legacy" = the Container Manager's legacy look (near-black rounded buttons, thin grey border, blue when on).
+BUTTON_STYLES = {
+    "default": None,
+    "legacy": dict(fill=0xFF141414, off=0xFF141414, border=0xFF5A5A5A, hover=0xFF464646, click=0xFF284096,
+                   on=0xFF284096, font=0xFFFFFFFF, radius=0.45, borderw=0.03, back="255.72.72.72"),
+}
+
+
+def clean_style(x):
+    return x if x in BUTTON_STYLES else "default"
+
+
 def read_button_layout(path):
     """(order, columns) from the bridge settings file, or None for the standard layout"""
     try:
@@ -1502,7 +1521,7 @@ def read_button_layout(path):
         order.insert(0, "title")     # saved before the title was a list item: keep it
     if not [x for x in order if x not in ("gap", "title")]:
         return None
-    return order, max(2, min(6, cols)), clean_title(tb.get("title"), TITLE_CTRL)
+    return order, max(2, min(6, cols)), clean_title(tb.get("title"), TITLE_CTRL), clean_style(tb.get("style"))
 
 
 def lp100_from_settings(path):
@@ -1601,6 +1620,7 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
     spec = spec[:31]
     rows = max(1, (len(spec) + cols - 1) // cols)
     cw = ig()
+    btn_style = layout[3] if (layout and len(layout) > 3) else "default"
     show_ctitle = (not layout) or ("title" in order)
     ctrl = [
         ("TEXT_OVERLAY", b.text(title_text(ctrl_title), TITLE, 12.0, True), ig()),
@@ -1609,7 +1629,7 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
         ("TEXT_OVERLAY", b.text("%%%s.amp_power%%  %%%s.amp_mode%%   Fan %%%s.amp_fan%% (min %%%s.amp_fan_min%%)   Fault: %%%s.amp_fault_text%%"
                                 % (T, T, T, T, T), CYAN), ig()),
         ("TEXT_OVERLAY", b.text(FREQ % (T, T), GREEN, 12.0, True), ig()),
-        ("OTHER_BUTTONS", b.buttons(spec, cols, out4), ig(), 0.12 * rows * 4.0 / max(cols, 4)),
+        ("OTHER_BUTTONS", b.buttons(spec, cols, out4, btn_style), ig(), 0.12 * rows * 4.0 / max(cols, 4)),
     ]
     cn = ig()
     ctrl.append(("TEXT_OVERLAY", b.text(NOANT % T, RED, 12.0, True, gate=led_fourchar(cn)), ig()))
@@ -2058,6 +2078,11 @@ def run_one(a, here):
             db.insert_after("meterData_" + cid, rows[2:])
         else:
             db.insert_at_options_end(rows)
+        if cid == cid_c:        # the Controls window background goes with the button look
+            f = db.val("meterContData_" + cid).split("|")
+            st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "default")
+            f[12] = st_["back"] if st_ else "255.0.0.0"
+            db.set_val("meterContData_" + cid, "|".join(f))
     write_db(db)
 
     say("")

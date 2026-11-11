@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kpa1500_sdr_bridge.py  v2.41  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
+kpa1500_sdr_bridge.py  v2.42  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
 ==============================================================================
 Concept, design and on-air testing: KW4EX.
 
@@ -29,6 +29,9 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
+  2.42 (2026-11-11)  Controls window: new "Button style" choice in Settings > Thetis windows. Standard is the look the
+                     windows always had (the default); Legacy is the near-black rounded look of the Container Manager.
+                     The panel's Thetis look follows it. The installer names the right Thetis TCI page.
   2.41 (2026-11-11)  The panel header shows which radio program the bridge found (Thetis or NereusSDR).
                      Panel and help say "Thetis, Thetis HL2 or SDR-VST3" where they only said Thetis;
                      the Thetis windows section says it is not for NereusSDR (use the Applet). The
@@ -141,7 +144,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.41"
+VERSION = "2.42"
 BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -213,7 +216,8 @@ def clean_thetis_buttons(tb):
         except (TypeError, ValueError):
             cols = 4
     return {"order": order, "columns": cols, "tv": 1,
-            "title": clean_title(tb.get("title") if isinstance(tb, dict) else None, TITLE_CTRL)}
+            "title": clean_title(tb.get("title") if isinstance(tb, dict) else None, TITLE_CTRL),
+            "style": tb.get("style") if isinstance(tb, dict) and tb.get("style") in ("default", "legacy") else "default"}
 
 
 def fit_status(s):
@@ -2925,12 +2929,14 @@ class Bridge:
         elif name in ("thetis_buttons", "thetis_buttons_default"):
             params = params if isinstance(params, dict) else {}
             if name == "thetis_buttons_default":
-                tb = {"order": list(TB_DEFAULT), "columns": 4, "tv": 1, "title": self.thetis_buttons["title"]}
+                tb = {"order": list(TB_DEFAULT), "columns": 4, "tv": 1, "title": self.thetis_buttons["title"],
+                      "style": self.thetis_buttons.get("style", "default")}
             else:
                 params = dict(params)
                 params.setdefault("order", self.thetis_buttons["order"])
                 params.setdefault("columns", self.thetis_buttons["columns"])
                 params.setdefault("title", self.thetis_buttons["title"])
+                params.setdefault("style", self.thetis_buttons.get("style", "default"))
                 params["tv"] = 1
                 if not isinstance(params.get("order"), list) or not [
                         x for x in params["order"] if x in TB_IDS and x not in ("gap", "title")]:
@@ -4410,7 +4416,7 @@ def help_sections():
         _P("**Your own layout:** in the browser panel open **Settings > Thetis windows**. For the "
            "**Telemetry window** choose which lines and bars it shows and in which order (status line, "
            "AMP frequency line, forward / SWR / drive bars, the text lines, the LP-100A bars and line, a "
-           "**Title line** and blank lines). For the **Controls window** (it has a **Title line** item too) move buttons with the arrows, take "
+           "**Title line** and blank lines). For the **Controls window** (it has a **Title line** item too) pick the **Button style** (Standard = black buttons that turn blue when on, as before; Legacy = near-black rounded buttons with a thin grey border) and move buttons with the arrows, take "
            "out the ones you never use (x), put them back (+), add a blank space, and choose 3 to 6 columns. "
            "Each window has a **Title** you can type, for example `KW4EX {ver} Amp` - `{ver}` shows the "
            "bridge version (if the Telemetry title shows it, the AMP line leaves it out). "
@@ -5191,6 +5197,9 @@ font-family:Verdana,Tahoma,sans-serif;color:#fff;font-size:.8rem;line-height:1.3
 min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
 .tbtns button.lit{background:#6e9be0;color:#000;border-color:#6e9be0}
 .tbtns button:hover{border-color:#fff}
+.tbtns.legacy button{background:#141414;border-color:#5a5a5a;border-radius:.9rem}
+.tbtns.legacy button.lit{background:#284096;color:#fff;border-color:#284096}
+.tbtns.legacy button:hover{background:#464646}
 .editing #thetis{pointer-events:none;opacity:.8}
 </style></head><body>
 <div class="top"><h1>KPA1500 &amp; LP-100A</h1><span id="ver" class="small dry"></span><span id="ampbadge" title="Is the amplifier answering at its network address?">AMP ?</span><span id="radiobadge" title="Which radio program the bridge is connected to. Thetis here means Thetis, Thetis HL2 or SDR-VST3.">Radio ?</span><span id="dry" class="small dry"></span>
@@ -5264,6 +5273,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
  <div class="drow" id="d_tbhid"></div>
  <div class="drow">
   <label>Columns <select id="d_tbcols"><option>3</option><option>4</option><option>5</option><option>6</option></select></label>
+  <label title="Standard: black buttons that turn blue when on (the look the windows always had). Legacy: near-black rounded buttons with a thin grey border, as in the Container Manager. Press Rebuild Thetis windows to put it into Thetis.">Button style <select id="d_tbstyle"><option value="default">Standard</option><option value="legacy">Legacy</option></select></label>
   <button id="d_tbgap">Add blank space</button><button id="d_tbdef">Standard order</button>
  </div>
  <div class="dsub">Knob window <span class="small">(what the FlexControl knob and buttons do right now)</span></div>
@@ -5604,7 +5614,7 @@ const TH={};
  host.appendChild(te);host.appendChild(co);host.appendChild(kwin);
 })();
 function buildThetisButtons(tb){
- const g=TH.grid,key=JSON.stringify(tb);if(key===TH.key)return;TH.key=key;
+ const g=TH.grid,key=JSON.stringify(tb);g.classList.toggle('legacy',tb.style==='legacy');if(key===TH.key)return;TH.key=key;
  while(g.firstChild)g.removeChild(g.firstChild);TH.btns=[];
  g.style.gridTemplateColumns='repeat('+tb.columns+',1fr)';
  tb.order.forEach(id=>{const d=TBTN[id];if(!d||id==='title')return;const b=document.createElement('button');b.type='button';
@@ -5988,9 +5998,11 @@ function syncTb(s){
  if(document.activeElement!==$('d_kwon'))$('d_kwon').checked=!(s.thetis_knobwin&&s.thetis_knobwin.enabled===false);
  const tb=s.thetis_buttons||{columns:4};
  if(document.activeElement!==$('d_tbcols'))$('d_tbcols').value=String(tb.columns);
+ if(document.activeElement!==$('d_tbstyle'))$('d_tbstyle').value=tb.style||'default';
  $('d_tbbuild').disabled=!s.is_windows;$('d_tbbuild').title=s.is_windows?'Opens the setup on the bridge computer':'Only when the bridge runs on Windows';
 }
 $('d_tbcols').addEventListener('change',e=>{const o=edCur(EDIT.tb);o.columns=+e.target.value;edSave(EDIT.tb,o);});
+$('d_tbstyle').addEventListener('change',e=>{const o=edCur(EDIT.tb);o.style=e.target.value;edSave(EDIT.tb,o);});
 $('d_tbgap').addEventListener('click',()=>{const o=edCur(EDIT.tb);o.order.push('gap');edSave(EDIT.tb,o);});
 $('d_tbdef').addEventListener('click',()=>{if(confirm('Put the Controls buttons back in the standard order?'))send('thetis_buttons_default');});
 $('d_tmgap').addEventListener('click',()=>{const o=edCur(EDIT.tm);o.order.push('gap');edSave(EDIT.tm,o);});
@@ -6458,7 +6470,7 @@ def selftest():
     print("-- Thetis Controls button order --")
     ok_, msg_ = bridge.do_action("thetis_buttons", {"order": ["tune", "gap", "opr", "bogus", "opr", "fanup"], "columns": 9})
     check("button order saved: unknown and repeated buttons dropped, columns limited to 2-6",
-          ok_ and bridge.thetis_buttons == {"order": ["tune", "gap", "opr", "fanup"], "columns": 6, "tv": 1, "title": TITLE_CTRL}
+          ok_ and bridge.thetis_buttons == {"order": ["tune", "gap", "opr", "fanup"], "columns": 6, "tv": 1, "title": TITLE_CTRL, "style": "default"}
           and bridge.settings["thetis_buttons"]["order"][0] == "tune" and get_state()["thetis_buttons"]["columns"] == 6)
     check("an empty button list is refused", not bridge.do_action("thetis_buttons", {"order": ["gap"]})[0])
     ok_, msg_ = bridge.do_action("thetis_buttons", {"title": "My amp {ver} <b>100%"})
@@ -6474,7 +6486,7 @@ def selftest():
           and clean_thetis_meters(None) == {"order": TM_DEFAULT, "title": TITLE_TELE})
     bridge.do_action("thetis_buttons", {"title": TITLE_CTRL})
     bridge.do_action("thetis_buttons_default")
-    check("standard order restored", bridge.thetis_buttons == {"order": TB_DEFAULT, "columns": 4, "tv": 1, "title": TITLE_CTRL}
+    check("standard order restored", bridge.thetis_buttons == {"order": TB_DEFAULT, "columns": 4, "tv": 1, "title": TITLE_CTRL, "style": "default"}
           and clean_thetis_buttons(None)["order"] == TB_DEFAULT)
 
     c = setup_launch_cmd(r"C:\Radio Scripts\Setup_Thetis_Containers.bat", "kpa1500_settings.json")
