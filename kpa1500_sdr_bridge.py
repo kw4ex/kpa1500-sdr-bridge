@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kpa1500_sdr_bridge.py  v2.42  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
+kpa1500_sdr_bridge.py  v2.43  -  Thetis or NereusSDR (TCI) <-> Elecraft KPA1500 <-> LP-100A
 ==============================================================================
 Concept, design and on-air testing: KW4EX.
 
@@ -29,6 +29,12 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
+  2.43 (2026-11-11)  Over-drive protection: one limit in watts into the amp, and a choice of Ignore, Warn or Hold at
+                     the limit. The bridge reads the radio program's drive setting (CAT ZZPC; Thetis, HL2, SDR-VST3,
+                     NereusSDR) before you transmit and also watches the measured drive while transmitting. Hold at
+                     the limit puts the radio drive back to the limit, and puts the amp in STANDBY if the drive stays
+                     over it. Only active while the amp is in OPERATE and its own ATU is not tuning; short peaks (under
+                     0.8 s) are ignored. Panel Settings and Applet Look menu.
   2.42 (2026-11-11)  Controls window: new "Button style" choice in Settings > Thetis windows. Standard is the look the
                      windows always had (the default); Legacy is the near-black rounded look of the Container Manager.
                      The panel's Thetis look follows it. The installer names the right Thetis TCI page.
@@ -144,7 +150,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.42"
+VERSION = "2.43"
 BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -165,6 +171,11 @@ NOANT_DEFAULTS = {"160": -105, "80": -105, "60": -105, "40": -105, "30": -112, "
                   "17": -115, "15": -115, "12": -115, "10": -115, "6": None}
 NOANT_HYST = 3.0          # dB above the limit needed to clear the warning
 NOANT_SETTLE = 1.5        # s ignored after a band change or after transmit
+DG_ACTIONS = ("ignore", "warn", "limit")   # over-drive protection: do nothing / warn / hold the drive at the limit
+DG_TOL = 1.10             # measured drive must exceed the limit by this factor (+1 W) before it counts
+DG_SPIKE_S = 0.8          # s the measured drive must stay over the limit before it counts (short peaks are ignored)
+DG_SHOW_S = 3.0           # s the over-drive warning stays visible after the last confirmed over-drive
+DG_STANDBY_S = 1.2        # s of confirmed over-drive (after the drive was pulled back) before the amp goes to STANDBY
 NOANT_WINDOW = 2.5        # s of receive level averaged (median)
 NOANT_LEARN_MARGIN = 6    # learn: limit = level measured with no antenna + this many dB
 
@@ -199,6 +210,17 @@ def clean_thetis_meters(tm):
         if [x for x in o if x != "gap"]:
             order = o
     return {"order": order, "title": clean_title(tm.get("title") if isinstance(tm, dict) else None, TITLE_TELE)}
+
+
+def clean_dg_num(x, default, lo, hi):
+    """a number for the over-drive settings (kept inside lo..hi); default when it is not a number"""
+    try:
+        v = float(str(x).strip().lower().replace("w", ""))
+    except (TypeError, ValueError):
+        return default
+    if v != v:
+        return default
+    return round(max(lo, min(hi, v)), 1)
 
 
 def clean_thetis_buttons(tb):
@@ -1498,6 +1520,7 @@ body.stale #app>*{opacity:.45}
   <div class="ban warn" id="bFollow"></div>
   <div class="ban bad" id="bFault"></div>
   <div class="ban warn" id="bNoAnt"></div>
+  <div class="ban warn" id="bDrive"></div>
   <div class="ban bad" id="bDown">BRIDGE NOT RUNNING - data frozen</div>
  </div>
  <div class="sec" id="s_telemetry" data-sec="telemetry"><h2>Telemetry</h2><div class="grid" id="gTel"></div></div>
@@ -1610,6 +1633,7 @@ function render(s){
  $('hFreq').textContent=m.amp_freq||'---';const bw=$('bFollow');if(m.amp_following===0&&/!/.test(m.amp_freq_line||'')){bw.textContent='Amp frequency: '+m.amp_freq_line;bw.classList.add('show');}else bw.classList.remove('show');
  const bf=$('bFault');if(m.amp_fault){bf.textContent='FAULT: '+(m.amp_fault_text||m.amp_fault);bf.classList.add('show');}else bf.classList.remove('show');
  const bn=$('bNoAnt');if(m.noant==1){bn.textContent=m.noant_text||'ANTENNA?';bn.classList.add('show');}else bn.classList.remove('show');
+ const bd=$('bDrive');if(m.drvlim==1){bd.textContent=m.drvlim_text||'DRIVE OVER LIMIT';bd.classList.add('show');}else bd.classList.remove('show');
  METERS.forEach(x=>setMeter(x,m[x[2]]));
  BUTTONS.forEach(b=>{const e=$('b_'+b[0]);if(!e)return;const lit=b[3]?!!b[3](m):false;
   const hh=$('h_'+b[0]);if(hh){hh.textContent=lit?b[1]:b[2];hh.classList.toggle('lit',lit);}
@@ -1706,6 +1730,18 @@ function openEd(){
  nsel.onchange=async()=>{const j=await post('noant_action',{action:nsel.value});toast(j.message||'Done');};
  ed.appendChild(row([el('span',{textContent:'When it triggers',style:'min-width:9em'}),nsel]));
  ed.appendChild(el('div',{className:'sub',textContent:'The limit for each band is set in the full panel (Panel button, Settings). This setting is saved by the bridge, not by this look.'}));
+ ed.appendChild(el('h3',{textContent:'Safety: over-drive protection'}));
+ const dg=(S&&S.drive_guard)||{};
+ const dgl=el('input',{type:'text',size:5,value:dg.limit>0?String(dg.limit):'',placeholder:'off'});
+ dgl.onchange=async()=>{const j=await post('drive_guard',{limit:dgl.value.trim()||'off'});toast(j.message||'Done');};
+ ed.appendChild(row([el('span',{textContent:'Limit (watts into the amp)',style:'min-width:12em'}),dgl]));
+ const dgs=el('select',{},[el('option',{value:'ignore',textContent:'Ignore'}),el('option',{value:'warn',textContent:'Warn'}),el('option',{value:'limit',textContent:'Hold at the limit'})]);dgs.value=dg.action||'warn';
+ dgs.onchange=async()=>{const j=await post('drive_guard',{action:dgs.value});toast(j.message||'Done');};
+ ed.appendChild(row([el('span',{textContent:'If drive goes over',style:'min-width:12em'}),dgs]));
+ const dgr=el('input',{type:'text',size:5,value:String(dg.radio_w||100)});
+ dgr.onchange=async()=>{const j=await post('drive_guard',{radio_w:dgr.value.trim()});toast(j.message||'Done');};
+ ed.appendChild(row([el('span',{textContent:"Radio full power (W)",style:'min-width:12em'}),dgr]));
+ ed.appendChild(el('div',{className:'sub',textContent:'Checks the radio program drive setting and the measured drive. Warn shows a message; Hold at the limit also puts the radio drive back to the limit. Only active while the amp is in OPERATE. Empty limit = off. Saved by the bridge, not by this look.'}));
  ed.appendChild(el('h3',{textContent:'Bridge'}));
  ed.appendChild(row([el('button',{className:'btn',textContent:'Quit bridge',onclick:async()=>{if(!confirm('Close the bridge and this window? The amplifier is not changed.'))return;const j=await post('quit_bridge');toast(j.message||'Closing');}}),
   el('span',{className:'sub',textContent:'Closes the bridge, its COM ports and this window. Only works on the bridge computer.'})]));
@@ -1776,6 +1812,21 @@ class Bridge:
         self.noant_low = False
         self.dummy_ok = set()         # bands where DUMMY OK was pressed
         self.noant_held = False       # amp put in STANDBY by the check
+        # over-drive protection: one limit in watts at the amplifier input (0 = off)
+        dg = self.settings.get("drive_guard") if isinstance(self.settings.get("drive_guard"), dict) else {}
+        self.dg_action = dg.get("action") if dg.get("action") in DG_ACTIONS else "warn"
+        self.dg_limit = clean_dg_num(dg.get("limit"), 0.0, 0.0, 1500.0)
+        self.dg_radio_w = clean_dg_num(dg.get("radio_w"), 100.0, 1.0, 1500.0)
+        self.dg_slider = None         # the radio's drive setting, 0-100 (read with CAT ZZPC)
+        self.dg_slider_t = 0.0
+        self.dg_query_t = 0.0
+        self.dg_last_tx = False
+        self.dg_clamp_t = 0.0
+        self.dg_over_since = None     # when measured over-drive began (raw, before the spike filter)
+        self.dg_hot_t = 0.0           # last time over-drive was confirmed (lasted longer than a short peak)
+        self.dg_held = False          # amp put in STANDBY by the over-drive protection
+        self.dg_held_info = ""
+        self.dg_logged = ""
         self._noant_tx_logged = False
         self._noant_low_logged = False
         # bridge-started radio TUNE (amp to STANDBY first, then key)
@@ -2155,6 +2206,136 @@ class Bridge:
                 self.log("No-antenna hold cleared - amp back to OPERATE")
             else:
                 self.log("No-antenna hold cleared")
+
+    # ---- over-drive protection -------------------------------------------
+    def dg_pct(self):
+        """the radio drive setting (0-100) that equals the limit"""
+        return max(0, min(100, int(self.dg_limit / self.dg_radio_w * 100.0 + 1e-6)))
+
+    def drive_guard_state(self):
+        """state: off | idle (amp not in OPERATE) | ok | slider (the radio's drive setting is over the limit)
+        | tx (measured drive is over the limit) | held (amp put in STANDBY)"""
+        enabled = self.dg_action != "ignore" and self.dg_limit > 0
+        slider_w = None if self.dg_slider is None else self.dg_slider * self.dg_radio_w / 100.0
+        fresh = self.dg_slider is not None and time.time() - self.dg_slider_t < 6.0
+        measured, msrc = self.drive_info()
+        tx = self.transmitting()
+        # not while the amp is in STANDBY or its own ATU is tuning (the amp passes the full radio power through then)
+        active = enabled and self.amp_ok and self.mode == 1 and not self.atu_tuning
+        st = {"action": self.dg_action, "limit": self.dg_limit, "radio_w": self.dg_radio_w,
+              "slider": self.dg_slider if fresh else None,
+              "slider_w": round(slider_w, 1) if (slider_w is not None and fresh) else None,
+              "drive_w": round(measured, 1), "tx": tx, "state": "off", "warn": False, "held": self.dg_held}
+        if not enabled:
+            st["state"] = "off"
+        elif self.dg_held and not active:
+            st["state"] = "held"
+        elif not active:
+            st["state"] = "idle"
+        else:
+            over_tx = tx and time.time() - self.dg_hot_t < DG_SHOW_S
+            over_sl = fresh and slider_w > self.dg_limit + 0.5
+            st["state"] = "tx" if over_tx else "slider" if over_sl else "ok"
+        st["warn"] = st["state"] in ("tx", "slider", "held")
+        st["text"] = self.dg_text(st)
+        return st
+
+    @staticmethod
+    def dg_text(st):
+        s = st["state"]
+        if s == "tx":
+            return "!! OVER-DRIVE: %.0f W (limit %.0f W) !!" % (st["drive_w"], st["limit"])
+        if s == "held":
+            return "AMP HELD STBY - drive was over %.0f W. Press OPERATE" % st["limit"]
+        if s == "slider":
+            if st["action"] == "limit":
+                return "DRIVE SETTING %.0f W over limit %.0f W - holding at limit" % (st["slider_w"], st["limit"])
+            return "DRIVE SETTING %.0f W is over the limit %.0f W" % (st["slider_w"], st["limit"])
+        return ""
+
+    def drive_guard_loop(self):
+        while True:
+            time.sleep(0.25)
+            try:
+                self.drive_guard_tick()
+            except Exception as e:
+                if self.dg_logged != "err":
+                    self.dg_logged = "err"
+                    self.log("Over-drive protection error: %s" % e)
+
+    def drive_guard_tick(self, force=False):
+        """read the radio's drive setting, compare it and the measured drive with the limit, act"""
+        if self.dg_action == "ignore" or self.dg_limit <= 0:
+            self.dg_held = False if not (self.amp_ok and self.mode == 0) else self.dg_held
+            return
+        now = time.time()
+        tx = self.transmitting()
+        if self.tci_ok and self.tci_cat_ok:
+            if force or now - self.dg_query_t >= (0.5 if tx else 1.0) or (tx and not self.dg_last_tx):
+                self.dg_query_t = now
+                v = self.cat_query("ZZPC", 1.0)
+                try:
+                    pct = int(re.sub(r"[^0-9]", "", str(v))) if v is not None else None
+                except ValueError:
+                    pct = None
+                if pct is not None:
+                    self.dg_slider = max(0, min(100, pct))
+                    self.dg_slider_t = time.time()
+        self.dg_last_tx = tx
+        if self.dg_held and self.mode == 1:
+            self.dg_held = False                       # the operator pressed OPERATE again
+        # measured drive: only the amp's own input reading counts, and only when it lasts (short peaks are ignored)
+        meas, msrc = self.drive_info()
+        raw_over = (self.amp_ok and self.mode == 1 and not self.atu_tuning and tx and msrc == "amp"
+                    and meas > self.dg_limit * DG_TOL + 1.0)
+        if raw_over:
+            if self.dg_over_since is None:
+                self.dg_over_since = now
+            if now - self.dg_over_since >= DG_SPIKE_S:
+                self.dg_hot_t = now
+        else:
+            self.dg_over_since = None
+        st = self.drive_guard_state()
+        s = st["state"]
+        if s in ("slider", "tx", "held"):
+            key = s
+            if self.dg_logged != key:
+                self.dg_logged = key
+                if s == "slider":
+                    self.log("DRIVE SETTING %.0f W (radio slider %d) is over the limit %.0f W%s"
+                             % (st["slider_w"], st["slider"], st["limit"],
+                                " - holding it at the limit" if st["action"] == "limit" else ""))
+                elif s == "tx":
+                    self.log("OVER-DRIVE: %.0f W measured, limit %.0f W%s" % (
+                        st["drive_w"], st["limit"], " - pulling the drive back" if st["action"] == "limit" else ""))
+        elif s in ("ok", "idle", "off"):
+            self.dg_logged = ""
+        if st["action"] != "limit" or s not in ("slider", "tx"):
+            return
+        # hold at the limit: put the radio's drive setting back to the limit
+        if now - self.dg_clamp_t >= 1.5 and not self.a.dry_run:
+            self.dg_clamp_t = now
+            pct = self.dg_pct()
+            if self.tci_cat("ZZPC%03d" % pct):
+                self.dg_slider = pct
+                self.dg_slider_t = now
+                self.log("Drive setting put back to %d (limit %.0f W of the radio's %.0f W)"
+                         % (pct, self.dg_limit, self.dg_radio_w))
+        if s == "tx":
+            if (raw_over and self.dg_over_since is not None
+                    and now - self.dg_over_since >= DG_SPIKE_S + DG_STANDBY_S and now - self.dg_clamp_t >= 0.3
+                    and self.amp_ok and self.mode == 1 and not self.a.dry_run):
+                self.amp.set("^OS0;")
+                self.ingest("^OS;", self.amp.get("^OS;"))
+                self.dg_held = True
+                self.dg_over_since = None
+                self.dg_hot_t = 0.0
+                self.log("Amp put in STANDBY: drive stayed over the limit (%.0f W measured, limit %.0f W). "
+                         "Lower the drive, then press OPERATE." % (st["drive_w"], st["limit"]))
+
+    def save_drive_guard(self):
+        self.save_setting("drive_guard", {"action": self.dg_action, "limit": self.dg_limit,
+                                          "radio_w": self.dg_radio_w})
 
     def save_noant(self):
         self.save_setting("noant", {"enabled": self.noant_enabled, "action": self.noant_action,
@@ -3080,6 +3261,35 @@ class Bridge:
                 else:
                     return False, "No 'no antenna?' warning on %s m now - DUMMY OK is not needed" % band
             self.log(msg)
+        elif name == "drive_guard":
+            params = params if isinstance(params, dict) else {}
+            if "action" in params:
+                if params["action"] not in DG_ACTIONS:
+                    return False, "Action must be ignore, warn or limit"
+                self.dg_action = params["action"]
+            if "limit" in params:
+                raw = str(params["limit"]).strip().lower()
+                if raw in ("", "off", "0"):
+                    self.dg_limit = 0.0
+                else:
+                    v = clean_dg_num(raw, None, 0.0, 1e9)
+                    if v is None or not 1 <= v <= 1500:
+                        return False, "The drive limit must be a number of watts from 1 to 1500 (or off)"
+                    self.dg_limit = v
+            if "radio_w" in params:
+                v = clean_dg_num(params["radio_w"], None, 0.0, 1e9)
+                if v is None or not 1 <= v <= 1500:
+                    return False, "The radio's full power must be a number of watts from 1 to 1500"
+                self.dg_radio_w = v
+            self.dg_logged = ""
+            self.dg_query_t = 0.0
+            self.save_drive_guard()
+            lim = "off" if self.dg_limit <= 0 else "%g W" % self.dg_limit
+            ok, msg = True, "Over-drive protection: %s, limit %s (radio full power %g W)" % (
+                {"ignore": "ignore", "warn": "warn", "limit": "hold at the limit"}[self.dg_action], lim, self.dg_radio_w)
+            if self.dg_action != "ignore" and self.dg_limit <= 0:
+                msg += " - enter a limit in watts to switch it on"
+            self.log(msg)
         elif name in ("noant_on", "noant_off"):
             self.noant_enabled = (name == "noant_on")
             self.save_noant()
@@ -3379,6 +3589,7 @@ class Bridge:
             "cat_link": bool(self.cat_link and self.cat_link.connected),
             "applet_skin": self.applet_skin,
             "noant": self.noant_state(), "noant_limits": dict(self.noant_limits),
+            "drive_guard": self.drive_guard_state(),
             "noant_defaults": dict(NOANT_DEFAULTS),
             "tune_timeout": self.tune_timeout, "bridge_tune": self.bridge_tune,
             "thetis_buttons": self.thetis_buttons, "thetis_buttons_default": TB_DEFAULT,
@@ -3449,6 +3660,8 @@ class Bridge:
             "noant_held": int(self.noant_held),
             "dummy_ok": int(na["dummy"]),
             "noant_text": na["text"],
+            "drvlim": int(self.drive_guard_state()["warn"]),
+            "drvlim_text": self.drive_guard_state()["text"],
             "knob_mode": KNOB_MODES[self.knob_mode][0] if (self.knob and self.knob.connected) else "--",
             "knob_connected": int(bool(self.knob and self.knob.connected)),
             "knob_now": KNOB_MODES[self.knob_mode][0],
@@ -3663,6 +3876,9 @@ class Bridge:
             s += " | RX %.0f" % na["dbm"]
         s += {"low": " ANTENNA?" + (" (STBY)" if na["hold"] else ""), "tx": " !!TX NO ANTENNA?!!",
               "dummy": " DUMMY OK"}.get(na["state"], "")
+        dg = self.drive_guard_state()
+        if dg["warn"]:
+            s += " | " + dg["text"]
         return s
 
     def run(self):
@@ -3725,6 +3941,7 @@ class Bridge:
             ConsoleKeys(self).start()
         threading.Thread(target=self.tci_loop, daemon=True).start()
         threading.Thread(target=self.poll_loop, daemon=True).start()
+        threading.Thread(target=self.drive_guard_loop, daemon=True).start()
         if self.radio_pref == "nereus":
             self.start_cat_link()
         if getattr(self.a, "applet", False) and self.web and not self.a.no_web:
@@ -3798,6 +4015,8 @@ MMIO_VAR_HELP = {
     "noant_held": "1 when the bridge is keeping the amp in STANDBY because of the 'no antenna?' check",
     "dummy_ok": "1 when DUMMY OK has been pressed for this band (dummy load connected on purpose)",
     "noant_text": "the 'no antenna?' warning text (empty when all is well)",
+    "drvlim": "1 when the over-drive protection is warning (drive setting or measured drive over the limit)",
+    "drvlim_text": "the over-drive warning text (empty when all is well)",
     "knob_mode": "what the FlexControl knob does now, e.g. VFO A tuning or AF volume (master) ('--' = no knob)",
     "knob_connected": "1 when the FlexControl tuning knob is connected",
     "knob_now": "what turning the knob does now, e.g. VFO A tuning, AF volume (master), AGC gain (RX1)",
@@ -4130,6 +4349,40 @@ def help_sections():
         _P("**Auto-stop:** a tune started with the bridge TUNE button stops by itself after 20 s "
            "(change it in Settings > Safety; 0 = never). The bridge never changes the tune power: "
            "set it in Thetis as usual. With Standby-on-Tune off, TUNE leaves the amp as it is."),
+    ]))
+    S.append(("drive", "Over-drive protection (drive limit)", [
+        _P("Too much drive can damage the amplifier. This option lets you set **one limit, in watts, "
+           "for the drive going into the KPA1500**, and choose what the bridge does when the drive is "
+           "over it. It works the same with Thetis, Thetis HL2, SDR-VST3 and NereusSDR."),
+        _UL("**Two things are watched.** First the **drive setting of the radio program** (its drive "
+            "slider, read with the CAT command ZZPC about once a second). This is checked **before you "
+            "transmit**. Second the **drive actually measured** into the amplifier while you transmit.",
+            "**Only while the amp is in OPERATE.** In STANDBY the amp passes the signal straight "
+            "through, so the check waits (Settings shows \"Waiting: the amp is not in OPERATE\"). "
+            "TUNE with Standby-on-Tune is therefore not limited by it. It also waits while the amp's "
+            "own ATU is tuning (the amp passes the radio power straight through then), so you can "
+            "tune the amp with the amp left in STANDBY and the radio at full power.",
+            "**Short peaks are ignored.** The measured drive must stay over the limit for about "
+            "0.8 seconds before it counts, so a quick spike does not trigger anything. The warning "
+            "then stays visible for 3 seconds.",
+            "**One limit.** Type it in watts. Empty (or `off`) switches the protection off.",
+            "**Radio full power.** The drive slider is a percentage of the radio's full power. The "
+            "bridge turns it into watts with this number: 100 for a 100 W radio (the default), 5 for a "
+            "Hermes Lite 2. Slider 80 on a 100 W radio is 80 W; on a 5 W radio it is only 4 W."),
+        _TABLE(["If the drive goes over", "What happens"], [
+            ["Ignore", "Nothing. The check is off."],
+            ["Warn", "A red message: a bar across the panel, a banner in the Applet, a line in the status "
+                     "text and in the bridge window. Nothing is changed."],
+            ["Hold at the limit", "The same warning, **and** the bridge puts the radio's drive setting back "
+                                  "to the limit (so it happens before you key up). If the measured drive "
+                                  "still stays over the limit for more than a second while transmitting, the "
+                                  "amp is put in STANDBY. It stays there until you lower the drive and press "
+                                  "OPERATE yourself."]]),
+        _P("**Where to set it:** browser panel **Settings > Over-drive protection**, or the Applet **Look** "
+           "menu under **Safety: over-drive protection**. The measured drive has a 10 percent (plus 1 W) "
+           "margin so the amp's own reading does not cause false alarms."),
+        _NOTE("This helps; it does not replace care. The bridge can only react to what the radio program "
+              "and the amplifier report, and the amplifier's own protection stays the last line of defence."),
     ]))
     S.append(("noant", "No antenna? check (receive level)", [
         _P("With no antenna connected (antenna switch in the wrong place, a cable off, a relay "
@@ -4616,6 +4869,8 @@ SWR %tatg.amp_swr%   TMP %tatg.amp_temp% C   FLT %tatg.amp_fault_text%
                                     "bridge window for 'Could not start control panel'. Try `--web-port 8090`."],
             ["Panel looks old after an update", "Press Ctrl+F5. The panel warns you if its revision differs."],
             ["Drive is blank in standby", "Needs Thetis 2.10.3.13 or newer. It shows while transmitting only."],
+            ["Over-drive protection says it is waiting", "It only works while the amp is in OPERATE. In STANDBY the amp passes the signal through, so the limit is not applied."],
+            ["The drive slider setting is never read", "The radio program must answer CAT commands (Thetis through TCI, NereusSDR on its TCP CAT port). If Settings says the CAT commands do not get through, fix that first. The measured-drive check still works without it."],
             ["LP-100A will not connect", "Run `py -m pip install pyserial`, check the COM port in Device "
                                          "Manager, the baud rate, and that the meter is on the Watts screen. "
                                          "The reason shows under Settings."],
@@ -5178,8 +5433,10 @@ input[type=range]{width:7rem}
 #antwarn{display:none;background:var(--warn);color:#000;font-weight:700;padding:.4rem .6rem;border-radius:.3rem;margin-bottom:.5rem;align-items:center;gap:.6rem;flex-wrap:wrap}
 #antwarn.on{display:flex}#antwarn.tx{background:var(--bad);color:#fff;animation:blink 1s steps(2) infinite}
 #antwarn span{flex:1}#antwarn button{min-height:1.8rem;padding:.15rem .6rem;font-weight:700}
+#drvwarn{display:none;background:var(--warn);color:#000;font-weight:700;padding:.4rem .6rem;border-radius:.3rem;margin-bottom:.5rem}
+#drvwarn.on{display:block}#drvwarn.tx{background:var(--bad);color:#fff;animation:blink 1s steps(2) infinite}
 @keyframes blink{50%{opacity:.55}}
-@media (prefers-reduced-motion:reduce){#antwarn.tx{animation:none}}
+@media (prefers-reduced-motion:reduce){#antwarn.tx,#drvwarn.tx{animation:none}}
 .tc .tna{display:none;color:#ff3030;font-weight:700;white-space:pre;text-align:center}
 .tc .tna.on{display:block}.tc .tna.low{color:#ffa500}
 /* Thetis look: the two Thetis containers, live in the browser */
@@ -5211,6 +5468,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
  <div class="small">Forgot it? Open the panel on the bridge computer itself (<b>http://127.0.0.1:8080</b>) - no password is needed there - then Settings &gt; Panel access &gt; Remove password.</div></div>
 <div id="ampdown"></div>
 <div id="antwarn" role="alert"><span id="antwarn_t"></span> <button id="antwarn_b" type="button">DUMMY OK</button></div>
+<div id="drvwarn" role="alert"><span id="drvwarn_t"></span></div>
 <div id="drawer">
  <div class="dh">Layout</div>
  <div class="drow">
@@ -5248,6 +5506,16 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <label title="Put the amp in STANDBY for the radio's TUNE and back to OPERATE afterwards"><input type="checkbox" id="d_sot"> Standby-on-Tune</label>
   <label title="A TUNE started with the bridge TUNE button stops by itself after this time">Auto-stop TUNE after <input type="text" id="d_tunemax" size="3" inputmode="numeric"> s (0 = never)</label>
  </div>
+ <div class="dh">Over-drive protection <span class="small">(drive going into the amplifier)</span></div>
+ <div class="drow">
+  <label>Limit <input type="text" id="d_dglim" size="5" inputmode="numeric" placeholder="off"> W</label>
+  <label>If it goes over <select id="d_dgact"><option value="ignore">Ignore</option><option value="warn">Warn</option><option value="limit">Hold at the limit</option></select></label>
+  <span id="d_dgstat" class="small"></span>
+ </div>
+ <div class="drow">
+  <label title="The radio's drive slider is a percentage of this. 100 for a 100 W radio, 5 for a Hermes Lite 2.">Radio full power <input type="text" id="d_dgrw" size="5" inputmode="numeric"> W</label>
+ </div>
+ <div class="small">One limit, in watts into the amplifier. The bridge reads the drive setting of the radio program (Thetis, HL2, SDR-VST3 or NereusSDR) and the drive it actually measures while you transmit. <b>Warn</b> shows a red message. <b>Hold at the limit</b> also puts the radio's drive setting back to the limit before you transmit, and if the drive still stays over the limit while transmitting it puts the amp in STANDBY. It only acts while the amplifier is in OPERATE. Leave the limit empty to switch it off. The amplifier's own protection stays the last line of defence.</div>
  <div class="dh">No antenna? check <span class="small">(receive level from the radio program)</span></div>
  <div class="drow">
   <label><input type="checkbox" id="d_na"> Check is on</label>
@@ -5797,7 +6065,13 @@ function update(s){
    ?'!! TRANSMITTING - NO ANTENNA? The receive level was '+na.dbm.toFixed(0)+' dBm on '+na.band+' m. Check the antenna / dummy load !!'
    :'NO ANTENNA? Receive level '+na.dbm.toFixed(0)+' dBm on '+na.band+' m is below the limit '+na.limit+' dBm.'
     +(na.hold?' The amp is held in STANDBY.':'')+' Check the antenna - press DUMMY OK if a dummy load is connected.';}
- if(editing){syncNa(s);syncTb(s);syncPw(s);syncKnob(s);}
+ {const dg=s.drive_guard||{},w=$('drvwarn');
+  w.classList.toggle('on',!!dg.warn);w.classList.toggle('tx',dg.state==='tx');
+  if(dg.warn)$('drvwarn_t').textContent=dg.state==='tx'
+   ?'!! OVER-DRIVE: '+dg.drive_w.toFixed(0)+' W into the amplifier (limit '+dg.limit+' W).'+(dg.action==='limit'?' Pulling the drive back.':' Lower the drive!')+' !!'
+   :dg.state==='held'?'The amp was put in STANDBY because the drive stayed over '+dg.limit+' W. Lower the drive, then press OPERATE.'
+   :'The radio drive setting ('+dg.slider+' = about '+dg.slider_w+' W) is over the limit '+dg.limit+' W.'+(dg.action==='limit'?' Holding it at the limit.':' Lower it before you transmit.');}
+ if(editing){syncDg(s);syncNa(s);syncTb(s);syncPw(s);syncKnob(s);}
  if(s.mm)updateThetis(s);
  $('dry').textContent=s.dry_run?'[DRY-RUN: buttons do not send]':'';
  if(editing){lpStatus(s);ampStatus(s);if(document.activeElement!==$('d_confirm'))$('d_confirm').checked=s.confirm_off!==false;
@@ -5903,6 +6177,9 @@ function syncNa(s){
   ({off:'check off',na:'no level from Thetis (is Thetis running? TCI on?)',nolimit:'no limit for this band',ok:'normal',
     low:'TOO LOW - no antenna?',tx:'transmitting - no antenna?',dummy:'DUMMY OK pressed'}[na.state]||'');
 }
+$('d_dglim').addEventListener('change',e=>send('drive_guard',{limit:e.target.value.trim()||'off'}));
+$('d_dgact').addEventListener('change',e=>send('drive_guard',{action:e.target.value}));
+$('d_dgrw').addEventListener('change',e=>send('drive_guard',{radio_w:e.target.value.trim()}));
 $('d_na').addEventListener('change',e=>send(e.target.checked?'noant_on':'noant_off'));
 $('d_naact').addEventListener('change',e=>send('noant_action',{action:e.target.value}));
 $('d_sot').addEventListener('change',e=>send(e.target.checked?'sot_on':'sot_off'));
@@ -5992,6 +6269,14 @@ function edSync(E,s){
  if(missing.length){const l=document.createElement('span');l.className='small';l.textContent='Not shown:';hid.appendChild(l);
   missing.forEach(id=>hid.appendChild(tbSmall('+ '+E.name(id),'Put '+E.name(id)+' back'+(id==='title'?' (at the top)':' (at the end)'),()=>{
    const o=edCur(E);if(id==='title')o.order.unshift(id);else o.order.push(id);edSave(E,o);})));}
+}
+function syncDg(s){
+ const dg=s.drive_guard||{};
+ if(document.activeElement!==$('d_dglim'))$('d_dglim').value=dg.limit>0?String(dg.limit):'';
+ if(document.activeElement!==$('d_dgact'))$('d_dgact').value=dg.action||'warn';
+ if(document.activeElement!==$('d_dgrw'))$('d_dgrw').value=String(dg.radio_w||100);
+ $('d_dgstat').textContent=(dg.action==='ignore'||!(dg.limit>0))?'Protection is off':
+  (dg.state==='idle'?'Waiting: the amp is not in OPERATE':'Radio drive setting: '+(dg.slider==null?'not read yet':dg.slider+' (about '+dg.slider_w+' W)')+(dg.state==='ok'?' - fine':''));
 }
 function syncTb(s){
  edSync(EDIT.tb,s);edSync(EDIT.tm,s);edSync(EDIT.kw,s);
@@ -6558,6 +6843,96 @@ def selftest():
     wait_for(lambda: bridge.knob_mode == "vfoa")
     ok_, msg_ = bridge.do_action("knob_try", {"event": "b3_double"})
     check("Try button (button 3 double = band up) -> ZZBU", ok_ and tci_got("run_cat_ex:ZZBU;"))
+    # ---- over-drive protection
+    print("-- over-drive protection --")
+    check("drive protection starts off (no limit)", get_state()["drive_guard"]["state"] == "off"
+          and bridge.dg_limit == 0)
+    check("bad limit refused", not bridge.do_action("drive_guard", {"limit": "abc"})[0]
+          and not bridge.do_action("drive_guard", {"limit": "2000"})[0]
+          and not bridge.do_action("drive_guard", {"action": "stop"})[0])
+    ok_, msg_ = bridge.do_action("drive_guard", {"action": "warn", "limit": "80", "radio_w": "100"})
+    check("limit 80 W, warn: saved", ok_ and bridge.settings["drive_guard"] == {"action": "warn", "limit": 80.0, "radio_w": 100.0})
+    bridge.mode = 1
+    tci_collect(0.2)
+    th_ = threading.Thread(target=lambda: bridge.drive_guard_tick(True), daemon=True)
+    th_.start()
+    ok1 = tci_got("run_cat_ex:ZZPC;")
+    thetis.send_text("run_cat_ex:ZZPC;,ZZPC090;")
+    th_.join(5)
+    dgs_ = get_state()["drive_guard"]
+    check("drive setting read from the radio (ZZPC 90) is over the limit: warning, nothing changed",
+          ok1 and bridge.dg_slider == 90 and dgs_["state"] == "slider" and dgs_["warn"]
+          and bridge.mmio_vars()["drvlim"] == 1 and "DRIVE SETTING" in bridge.mmio_vars()["drvlim_text"]
+          and "DRIVE SETTING" in bridge.status_text())
+    bridge.do_action("drive_guard", {"action": "limit"})
+    bridge.dg_clamp_t = 0.0
+    tci_collect(0.2)
+    th_ = threading.Thread(target=lambda: bridge.drive_guard_tick(True), daemon=True)
+    th_.start()
+    ok1 = tci_got("run_cat_ex:ZZPC;")
+    thetis.send_text("run_cat_ex:ZZPC;,ZZPC090;")
+    th_.join(5)
+    check("hold at the limit: the radio drive is put back to 80 (ZZPC080;)", tci_got("run_cat_ex:ZZPC080;")
+          and bridge.dg_slider == 80)
+    th_ = threading.Thread(target=lambda: bridge.drive_guard_tick(True), daemon=True)
+    th_.start()
+    ok1 = tci_got("run_cat_ex:ZZPC;")
+    thetis.send_text("run_cat_ex:ZZPC;,ZZPC080;")
+    th_.join(5)
+    check("setting back at the limit: no warning", ok1 and get_state()["drive_guard"]["state"] == "ok")
+    old_di, old_tx = bridge.drive_info, bridge.tx
+    bridge.tx = True
+    bridge.dg_query_t = time.time() + 100            # no radio queries in these checks
+
+    def dg_run(watts, src="amp", secs=0.0):
+        bridge.drive_info = lambda: (float(watts), src)
+        bridge.dg_over_since, bridge.dg_hot_t = None, 0.0
+        bridge.drive_guard_tick(False)
+        if secs:
+            time.sleep(secs)
+            bridge.drive_guard_tick(False)
+        return get_state()["drive_guard"]
+
+    check("a short peak (95 W for less than a second) is ignored", dg_run(95)["state"] == "ok")
+    dgs_ = dg_run(95, secs=DG_SPIKE_S + 0.2)
+    check("95 W lasting longer than that (limit 80 W): OVER-DRIVE warning",
+          dgs_["state"] == "tx" and dgs_["warn"] and "OVER-DRIVE" in bridge.mmio_vars()["drvlim_text"])
+    check("85 W is inside the 10% tolerance (no warning)", dg_run(85, secs=DG_SPIKE_S + 0.2)["state"] == "ok")
+    check("100 W seen only from the radio (amp in bypass) is not judged", dg_run(100, "radio", DG_SPIKE_S + 0.2)["state"] == "ok")
+    atu_stop = threading.Event()
+
+    def atu_hold():                      # the simulated amp's poll answers would reset it, so keep setting it
+        while not atu_stop.is_set():
+            bridge.atu_tuning = True
+            time.sleep(0.005)
+    threading.Thread(target=atu_hold, daemon=True).start()
+    time.sleep(0.05)
+    dgs_ = dg_run(95, secs=DG_SPIKE_S + 0.2)
+    check("the amp's own ATU is tuning: no warning, nothing changed",
+          dgs_["state"] == "idle" and not dgs_["warn"])
+    atu_stop.set()
+    time.sleep(0.05)
+    bridge.atu_tuning = None
+    bridge.drive_info, bridge.tx = old_di, old_tx
+    bridge.dg_slider = 80
+    bridge.dg_over_since, bridge.dg_hot_t = None, 0.0
+    bridge.mode = 0
+    bridge.dg_slider, bridge.dg_slider_t = 95, time.time()
+    check("amp in STANDBY: protection waits (idle), no warning", get_state()["drive_guard"]["state"] == "idle"
+          and not get_state()["drive_guard"]["warn"])
+    bridge.mode = 1
+    bridge.do_action("drive_guard", {"limit": "off"})
+    check("limit off switches it off", get_state()["drive_guard"]["state"] == "off"
+          and bridge.mmio_vars()["drvlim"] == 0)
+    bridge.do_action("drive_guard", {"action": "warn", "limit": "20", "radio_w": "5"})
+    bridge.dg_slider, bridge.dg_slider_t = 100, time.time()
+    check("small radio (5 W full power): slider 100 = 5 W is under a 20 W limit",
+          get_state()["drive_guard"]["state"] == "ok" and bridge.dg_pct() == 100)
+    bridge.do_action("drive_guard", {"action": "ignore", "limit": "80", "radio_w": "100"})
+    bridge.dg_slider, bridge.dg_slider_t = 100, time.time()
+    check("ignore: no warning even when over", get_state()["drive_guard"]["state"] == "off")
+    bridge.do_action("drive_guard", {"limit": "off", "action": "warn"})
+    bridge.dg_slider = None
     ok_, msg_ = bridge.do_action("knob_set", {"table": {"b3_long": "custom"}, "custom": {"b3_long": "ZZMA1;"}})
     fk.feed("X3L;")
     check("custom command on button 3 long (ZZMA1;) is sent, and saved",

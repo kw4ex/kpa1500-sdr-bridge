@@ -4,7 +4,7 @@
 
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
-Design and on-air testing by KW4EX. Version 2.42.
+Design and on-air testing by KW4EX. Version 2.43.
 
 ## What it does
 - Follows the radio frequency so the amplifier changes band by itself.
@@ -12,6 +12,7 @@ Design and on-air testing by KW4EX. Version 2.42.
 - Live amplifier and LP-100A readings; Operate/Standby, ATU, antenna, fan, clear fault, power on/off.
 - FlexControl knob support for both radio programs.
 - No-antenna protection: warn, warn and go to STANDBY, or refuse TUNE (or off).
+- **Over-drive protection**: set one limit in watts into the amplifier; the bridge reads the radio program's drive setting before you transmit and watches the measured drive, then ignores, warns, or holds the drive at the limit. Only while the amp is in OPERATE (not in STANDBY or while its ATU tunes); short peaks are ignored. Set it in the panel Settings or the Applet Look menu.
 - Works with Thetis or NereusSDR, one at a time; it finds out which one is running.
 - **Applet window**: meters, buttons, knob lines and LP-100A in one small window. Top line with frequency, Operate/Standby and Power. Colours, size, zoom, shrink-to-fit, sections and order are set from the window.
 - Ready-made Thetis windows (Telemetry, Controls, Knob) with your own item order and titles, and a choice of button look (Standard or Legacy) for the Controls window.
