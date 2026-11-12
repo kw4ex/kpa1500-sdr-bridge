@@ -51,6 +51,7 @@ import uuid
 SETUP_VERSION = "2.0"
 IN_PORT, OUT_PORT, OUT_LISTEN = 50100, 50101, 47102   # 47102: below 49152, where Windows does not reserve ports
 CTRL_NAME, TELE_NAME = "KPA1500 Controls - KW4EX", "KPA1500 Telemetry - KW4EX"
+CUSTOM_PREFIX = "KPA1500 Custom - "
 KNOB_NAME = "KPA1500 Knob - KW4EX"
 METERS_NAME = "KPA1500 Meters - KW4EX"
 
@@ -1572,6 +1573,28 @@ def read_knob_window(path):
     return kw.get("enabled", True) is not False, order, clean_title(kw.get("title"), TITLE_KNOB)
 
 
+def read_custom_containers(path):
+    """(containers, programs, numbers) from the bridge settings: your own containers and what their buttons need"""
+    d = _settings_json(path)
+    out = []
+    for c in (d.get("custom_containers") if isinstance(d.get("custom_containers"), list) else [])[:8]:
+        if not isinstance(c, dict) or not isinstance(c.get("name"), str) or not c["name"].strip():
+            continue
+        name = "".join(ch for ch in c["name"] if 32 <= ord(ch) < 127 and ch not in "%|<>&\"").strip()[:24]
+        if not name or name.lower() in [o["name"].lower() for o in out]:
+            continue
+        items = [i for i in (c.get("items") if isinstance(c.get("items"), list) else []) if isinstance(i, str)][:31]
+        try:
+            cols = max(2, min(6, int(c.get("columns", 3))))
+        except (TypeError, ValueError):
+            cols = 3
+        out.append({"name": name, "columns": cols, "items": items,
+                    "style": c.get("style") if c.get("style") in ("default", "legacy") else "legacy"})
+    progs = d.get("user_programs") if isinstance(d.get("user_programs"), list) else []
+    nums = d.get("user_numbers") if isinstance(d.get("user_numbers"), list) else []
+    return out, [x for x in progs if isinstance(x, dict)], [x if isinstance(x, dict) else {} for x in nums]
+
+
 def read_meters_window(path):
     """True/False when the bridge settings say whether to show the KPA1500 Meters window, None if never chosen"""
     mw = _settings_json(path).get("thetis_meterswin")
@@ -1635,7 +1658,7 @@ def lp100_from_settings(path):
         return None
 
 
-def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, meterswin=False):
+def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, meterswin=False, custom=None):
     T = b.T
     STALE = "DateTimeOffset.UtcNow.ToUnixTimeSeconds() - %%%s.bridge_time%% > 5" % T
     ALIVE = "DateTimeOffset.UtcNow.ToUnixTimeSeconds() - %%%s.bridge_time%% <= 5" % T
@@ -1703,32 +1726,50 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, met
     tele.append(("LED", b.led(ALIVE, led_fourchar(alive_t)), alive_t))
 
     # ---- Controls
+    def make_cat(leds, programs=None, numbers=None):
+        """the buttons a window can hold; the LED rows of the gated buttons go into leds (one set per window)"""
+
+        def L(key, cond):
+            g = ig()
+            leds[key] = (g, "(%s) && %s" % (cond, ALIVE))
+            return led_fourchar(g)
+
+        def B(on, off, mon, moff, four=None):
+            return dict(on=on, off=off, msg_on=mon, msg_off=moff, led=four)
+
+        CAT = {
+            "opr": B("OPERATE", "STANDBY", "KPA_STANDBY", "KPA_OPERATE", L("OPR", "%%%s.amp_operate%% == 1" % T)),
+            "atu": B("ATU IN", "ATU BYP", "KPA_ATU_BYPASS", "KPA_ATU_INLINE", L("ATU", "%%%s.amp_atu_inline%% == 1" % T)),
+            "ant": B("ANT 1", "ANT 2", "KPA_ANT_TOGGLE", "KPA_ANT_TOGGLE", L("ANT", "%%%s.amp_ant%% == 1" % T)),
+            "amp": B("AMP ON", "AMP OFF", "KPA_POWER_OFF", "KPA_POWER_ON", L("ONL", "%%%s.amp_online%% == 1" % T)),
+            "tune": B("STOP TUNE", "TUNE", "KPA_RADIO_TUNE_STOP", "KPA_RADIO_TUNE", L("RTN", "%%%s.amp_tune_active%% == 1" % T)),
+            "atutune": B("STOP ATU", "ATU TUNE", "KPA_ATU_CANCEL", "KPA_ATU_TUNE", L("TUN", "%%%s.amp_atu_tuning%% == 1" % T)),
+            "sot": B("SoT ON", "SoT OFF", "KPA_SOT_OFF", "KPA_SOT_ON", L("SOT", "%%%s.amp_sot%% == 1" % T)),
+            "key": B("KEY: SOFT", "KEY: HW", "KPA_KEY_HW", "KPA_KEY_SOFT", L("KEY", "%%%s.key_soft%% == 1" % T)),
+            "dummy": B("DUMMY OK", "DUMMY OK", "KPA_DUMMY_OK", "KPA_DUMMY_OK", L("DMY", "%%%s.dummy_ok%% == 1" % T)),
+            "fault": B("FAULT - CLR", "NO FAULT", "KPA_CLEAR_FAULT", "KPA_CLEAR_FAULT", L("FLT", "%%%s.amp_fault%% != 0" % T)),
+            "lpalarm": B("LP ALARM", "LP ALARM", "KPA_LP_ALARM", "KPA_LP_ALARM"),
+            "lpmode": B("LP MODE", "LP MODE", "KPA_LP_MODE", "KPA_LP_MODE"),
+            "fandn": B("FAN -", "FAN -", "KPA_FAN_DOWN", "KPA_FAN_DOWN"),
+            "fanup": B("FAN +", "FAN +", "KPA_FAN_UP", "KPA_FAN_UP"),
+        }
+        for nm, lab in (("open_help", "HELP"), ("open_panel", "SETTINGS"), ("open_applet", "APPLET")):
+            CAT[nm] = B(lab, lab, "KPA_OPEN_" + nm.split("_")[1].upper(), "KPA_OPEN_" + nm.split("_")[1].upper())
+        for k in range(1, 9):
+            lab = ((programs[k - 1].get("label") if programs and k <= len(programs) else "") or "PROG%d" % k)[:12]
+            CAT["prog%d" % k] = B(lab, lab, "KPA_RUN_%d" % k, "KPA_RUN_%d" % k)
+        for k in range(1, 7):
+            nd = numbers[k - 1] if numbers and k <= len(numbers) else {}
+            lab6 = (nd.get("label") or "NUM%d" % k)[:6]
+            CAT["num%d_dn" % k] = B(lab6 + " -", lab6 + " -", "KPA_NUM_%d_DN" % k, "KPA_NUM_%d_DN" % k)
+            CAT["num%d_up" % k] = B(lab6 + " +", lab6 + " +", "KPA_NUM_%d_UP" % k, "KPA_NUM_%d_UP" % k)
+            for q, v in enumerate((nd.get("presets") or [])[:4], 1):
+                pl = ("%g%s" % (v, nd.get("unit") or ""))[:8]
+                CAT["num%d_p%d" % (k, q)] = B(pl, pl, "KPA_NUM_%d_P%d" % (k, q), "KPA_NUM_%d_P%d" % (k, q))
+        return CAT
+
     leds = {}
-
-    def L(key, cond):
-        g = ig()
-        leds[key] = (g, "(%s) && %s" % (cond, ALIVE))
-        return led_fourchar(g)
-
-    def B(on, off, mon, moff, four=None):
-        return dict(on=on, off=off, msg_on=mon, msg_off=moff, led=four)
-
-    CAT = {
-        "opr": B("OPERATE", "STANDBY", "KPA_STANDBY", "KPA_OPERATE", L("OPR", "%%%s.amp_operate%% == 1" % T)),
-        "atu": B("ATU IN", "ATU BYP", "KPA_ATU_BYPASS", "KPA_ATU_INLINE", L("ATU", "%%%s.amp_atu_inline%% == 1" % T)),
-        "ant": B("ANT 1", "ANT 2", "KPA_ANT_TOGGLE", "KPA_ANT_TOGGLE", L("ANT", "%%%s.amp_ant%% == 1" % T)),
-        "amp": B("AMP ON", "AMP OFF", "KPA_POWER_OFF", "KPA_POWER_ON", L("ONL", "%%%s.amp_online%% == 1" % T)),
-        "tune": B("STOP TUNE", "TUNE", "KPA_RADIO_TUNE_STOP", "KPA_RADIO_TUNE", L("RTN", "%%%s.amp_tune_active%% == 1" % T)),
-        "atutune": B("STOP ATU", "ATU TUNE", "KPA_ATU_CANCEL", "KPA_ATU_TUNE", L("TUN", "%%%s.amp_atu_tuning%% == 1" % T)),
-        "sot": B("SoT ON", "SoT OFF", "KPA_SOT_OFF", "KPA_SOT_ON", L("SOT", "%%%s.amp_sot%% == 1" % T)),
-        "key": B("KEY: SOFT", "KEY: HW", "KPA_KEY_HW", "KPA_KEY_SOFT", L("KEY", "%%%s.key_soft%% == 1" % T)),
-        "dummy": B("DUMMY OK", "DUMMY OK", "KPA_DUMMY_OK", "KPA_DUMMY_OK", L("DMY", "%%%s.dummy_ok%% == 1" % T)),
-        "fault": B("FAULT - CLR", "NO FAULT", "KPA_CLEAR_FAULT", "KPA_CLEAR_FAULT", L("FLT", "%%%s.amp_fault%% != 0" % T)),
-        "lpalarm": B("LP ALARM", "LP ALARM", "KPA_LP_ALARM", "KPA_LP_ALARM"),
-        "lpmode": B("LP MODE", "LP MODE", "KPA_LP_MODE", "KPA_LP_MODE"),
-        "fandn": B("FAN -", "FAN -", "KPA_FAN_DOWN", "KPA_FAN_DOWN"),
-        "fanup": B("FAN +", "FAN +", "KPA_FAN_UP", "KPA_FAN_UP"),
-    }
+    CAT = make_cat(leds)
     order, cols = (layout[0], layout[1]) if layout else (DEFAULT_BUTTONS, 4)
     spec = []
     for bid in order:
@@ -1787,6 +1828,45 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, met
             knob.append(KW[x]())
             rest()
         knob.append(("LED", b.led(ALIVE, led_fourchar(alive_k)), alive_k))
+    customs = []
+    if custom is not None:
+        # your own containers (Settings > Custom containers): a title line, number lines, then one block of buttons
+        c_list, c_progs, c_nums = custom
+        for cd in c_list:
+            lds = {}
+            ccat = make_cat(lds, c_progs, c_nums)
+            ids = [i for i in cd.get("items", []) if isinstance(i, str)]
+            want_title = "title" in ids
+            lines = [i for i in ids if re.match(r"^num[1-6]$", i)]
+            spec = []
+            for bid in ids:
+                if bid == "gap":
+                    spec.append(dict(on="", off="", msg_on="", msg_off="", led=None, gap=True))
+                elif bid in ccat and not (bid.startswith("lp") and not lp100):
+                    spec.append(ccat[bid])
+            while spec and spec[-1].get("gap"):
+                spec.pop()
+            spec = spec[:31]
+            cols = max(2, min(6, int(cd.get("columns", 3))))
+            alive_x, citems = ig(), []
+            heads = ([("title", None)] if want_title else []) + [("num", i) for i in lines]
+            for n_, (kind, arg) in enumerate(heads):
+                if n_ == 0:
+                    first(PRE, led_fourchar(alive_x))
+                if kind == "title":
+                    citems.append(("TEXT_OVERLAY", txt(cd["name"].replace("%", ""), TITLE, 12.0, True), ig()))
+                else:
+                    citems.append(("TEXT_OVERLAY", txt("%%%s.%s_text%%" % (T, arg), GREEN, 12.0, True), ig()))
+                rest()
+            if spec:
+                crow = max(1, (len(spec) + cols - 1) // cols)
+                citems.append(("OTHER_BUTTONS", b.buttons(spec, cols, out4, cd.get("style", "legacy")), ig(),
+                               0.12 * crow * 4.0 / max(cols, 4)))
+            for key, (g, cond) in lds.items():
+                citems.append(("LED", b.led(cond, led_fourchar(g)), g))
+            if heads:
+                citems.append(("LED", b.led(ALIVE, led_fourchar(alive_x)), alive_x))
+            customs.append((cd, citems))
     if meterswin:
         # compact Meters window: one status line and the Fwd and SWR bars (a warning is drawn over the status line)
         b.compact = True
@@ -1803,7 +1883,7 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, met
             ("LED", b.led(ALIVE, led_fourchar(alive_m)), alive_m),
         ]
         b.compact = False
-        return tele, ctrl, knob, meterswin
+        return (tele, ctrl, knob, meterswin, customs) if custom is not None else (tele, ctrl, knob, meterswin)
     return tele, ctrl, knob
 
 
@@ -2094,6 +2174,7 @@ def run_one(a, here):
     old_ctrl, old_tele = containers_named(db, "KPA1500 Controls"), containers_named(db, "KPA1500 Telemetry")
     old_knob = containers_named(db, "KPA1500 Knob")
     old_meters = containers_named(db, "KPA1500 Meters")
+    old_custom = containers_named(db, CUSTOM_PREFIX.strip())
     say("")
     say("Containers:")
     say("  KPA1500 Telemetry : %s" % ("found - will be replaced" if old_tele else "will be added"))
@@ -2102,6 +2183,8 @@ def run_one(a, here):
         say("  KPA1500 Knob      : found")
     if old_meters:
         say("  KPA1500 Meters    : found")
+    if old_custom:
+        say("  Your own containers: %d found" % len(old_custom))
 
     if a.check:
         say("")
@@ -2109,7 +2192,7 @@ def run_one(a, here):
         return 0
 
     if a.remove:
-        if not (old_ctrl or old_tele or old_knob or old_meters):
+        if not (old_ctrl or old_tele or old_knob or old_meters or old_custom):
             say("There are no KPA1500 containers to remove.")
             return 0
         if not ask_yn("Remove the KPA1500 containers from %s?" % pname(), True, a.yes):
@@ -2117,7 +2200,7 @@ def run_one(a, here):
         bk = backup(path, here)
         say("Backup saved: %s" % bk)
         db.begin()
-        for cid in old_ctrl + old_tele + old_knob + old_meters:
+        for cid in old_ctrl + old_tele + old_knob + old_meters + old_custom:
             for p in items_of(db, cid):
                 db.delete("meterIGData_" + p[0])
                 db.delete("meterIGSettings_2_" + p[0])
@@ -2229,17 +2312,26 @@ def run_one(a, here):
 
     # containers (keep the old ids so windows stay where they were)
     b = Builder(lib, in_guid, in4, json_out=jflav)
-    tele, ctrl, knob, mwin = build_containers(b, out4, lp100, layout, meters, (kw_order, kw_title) if kw_on else None,
-                                              meterswin=True)
+    cust = read_custom_containers(spath)
+    tele, ctrl, knob, mwin, cwins = build_containers(b, out4, lp100, layout, meters,
+                                                     (kw_order, kw_title) if kw_on else None, meterswin=True, custom=cust)
     cid_t = old_tele[0] if old_tele else str(uuid.uuid4())
     cid_c = old_ctrl[0] if old_ctrl else str(uuid.uuid4())
     cid_k = (old_knob[0] if old_knob else str(uuid.uuid4())) if knob else None
     cid_m = (old_meters[0] if old_meters else str(uuid.uuid4())) if mw_on else None
-    for cid in old_ctrl + old_tele + old_knob + old_meters:
+    # your own containers: keep the id (and so the place) of one with the same name; remove the ones no longer listed
+    old_by_name = {}
+    for cid in old_custom:
+        nm = db.val("meterContData_" + cid).split("|")[15].split("\n")[0].strip()
+        old_by_name.setdefault(nm.lower(), cid)
+    cust_ids = []
+    for cd, _items in cwins:
+        cust_ids.append(old_by_name.get((CUSTOM_PREFIX + cd["name"] + " - KW4EX").lower()) or str(uuid.uuid4()))
+    for cid in old_ctrl + old_tele + old_knob + old_meters + old_custom:
         for p in items_of(db, cid):
             db.delete("meterIGData_" + p[0])
             db.delete("meterIGSettings_2_" + p[0])
-        if cid not in (cid_t, cid_c, cid_k, cid_m):
+        if cid not in [cid_t, cid_c, cid_k, cid_m] + cust_ids:
             db.delete("meterContData_" + cid)
             db.delete("meterData_" + cid)
     # new windows get a width; the height of every window is always fitted to what they show
@@ -2249,6 +2341,11 @@ def run_one(a, here):
         todo.append((cid_k, KNOB_NAME, 228, None, knob, old_knob, 100, 520))
     if mw_on:
         todo.append((cid_m, METERS_NAME, 260, None, mwin, old_meters, 560, 100))
+    backs = {cid_c: BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "legacy")}
+    for n_, ((cd, citems), ccid) in enumerate(zip(cwins, cust_ids)):
+        todo.append((ccid, CUSTOM_PREFIX + cd["name"] + " - KW4EX", max(180, 77 * cd["columns"]), None, citems,
+                     [ccid] if ccid in old_custom else [], 140 + 30 * n_, 300 + 30 * n_))
+        backs[ccid] = BUTTON_STYLES.get(cd.get("style", "legacy"))
     for cid, name, w, h, items, old, x, y in todo:
         if old:
             fw = db.val("meterContData_" + cid).split("|")
@@ -2260,16 +2357,14 @@ def run_one(a, here):
             f = db.val("meterContData_" + cid).split("|")
             f[15] = name
             f[4], f[5] = str(w), str(h)
-            if cid == cid_c:    # the Controls window background goes with the button look
-                st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "legacy")
-                f[12] = st_["back"] if st_ else "255.0.0.0"
+            if cid in backs:    # the window background goes with the button look
+                f[12] = backs[cid]["back"] if backs[cid] else "255.0.0.0"
             db.set_val("meterContData_" + cid, "|".join(f))     # one edit per row (a second one would undo this)
             db.insert_after("meterData_" + cid, rows[2:])
         else:
-            if cid == cid_c:
+            if cid in backs:
                 rf = rows[0][1].split("|")
-                st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "legacy")
-                rf[12] = st_["back"] if st_ else "255.0.0.0"
+                rf[12] = backs[cid]["back"] if backs[cid] else "255.0.0.0"
                 rows[0] = (rows[0][0], "|".join(rf))
             db.insert_at_options_end(rows)
     write_db(db)
@@ -2282,6 +2377,11 @@ def run_one(a, here):
             say("  Button port moved to %s (Windows had reserved the old one)." % pl.split(":")[1])
     say("  Containers: %s, %s%s%s" % (TELE_NAME, CTRL_NAME, (", " + KNOB_NAME) if knob else "",
                                     (", " + METERS_NAME) if mw_on else ""))
+    for cd, _i in cwins:
+        say("  Your container: %s" % (CUSTOM_PREFIX + cd["name"] + " - KW4EX"))
+    gone = len(old_custom) - len([c for c in cust_ids if c in old_custom])
+    if gone:
+        say("  %d of your containers that are no longer in the bridge settings were removed." % gone)
     say("")
     say("If anything looks wrong: Undo_Thetis_Containers.bat puts the backup back.")
     say("")

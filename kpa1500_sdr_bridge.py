@@ -29,6 +29,18 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
+  2.49 (in test)     YOUR OWN BUTTONS: three new Thetis/panel buttons that open the Help, the Settings page and the
+                     Applet. Up to 8 'Programs' (a label, a program and optional arguments) that a button starts;
+                     a button carries only the slot number, so it can never start anything you did not put there,
+                     and the slots can only be edited on the bridge computer. Up to 6 'Numbers' (e.g. a maximum safe
+                     drive) with - / + buttons and up to 4 preset buttons; a number can drive the over-drive limit or
+                     the TUNE auto-stop time. Up to 8 'Custom containers': your own Thetis windows with the buttons
+                     and number lines you pick (Settings > Custom containers, then Rebuild Thetis windows; Setup
+                     creates 'KPA1500 Custom - <name> - KW4EX', and Undo removes them).
+                     New look for the Settings and layout page of the browser panel: a menu of sections on the left,
+                     each in its own card with colour accents (light and dark). No setting changed.
+                     New buttons in its header: Restart bridge (closes this bridge and starts a new copy with your
+                     start file) and Stop bridge. A page served by the bridge cannot start it, so there is no Start button.
   2.48e              (same revision) Thetis gives every text line a full row, so the 'bridge not running' line is
                      gone (it was an extra top row). The first line of each window now blanks when the data is stale,
                      and a bridge closed normally sends '!! BRIDGE STOPPED !!' in it.
@@ -180,7 +192,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.48"
+VERSION = "2.49"
 BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -217,6 +229,105 @@ NOANT_LEARN_MARGIN = 6    # learn: limit = level measured with no antenna + this
 TB_DEFAULT = ["title", "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key",
               "fault", "lpalarm", "lpmode", "fandn", "fanup"]
 TB_IDS = set(TB_DEFAULT) | {"gap"}
+
+
+# Your own programs, numbers and containers (ids shared with kpa1500_thetis_setup.py)
+USER_PROGRAMS_MAX = 8
+USER_NUMBERS_MAX = 6
+CUSTOM_MAX = 8
+CUSTOM_ITEMS_MAX = 31
+NUM_PRESETS = 4
+CUSTOM_BUTTONS = ["opr", "atu", "ant", "amp", "tune", "atutune", "sot", "key", "dummy", "fault",
+                  "lpalarm", "lpmode", "fandn", "fanup", "open_help", "open_panel", "open_applet"]
+NUM_LINKS = ("", "dg_limit", "tune_timeout")      # a stored number, the over-drive limit, the TUNE auto-stop time
+
+
+def custom_item_ids():
+    ids = set(CUSTOM_BUTTONS) | {"gap", "title"}
+    for i in range(1, USER_PROGRAMS_MAX + 1):
+        ids.add("prog%d" % i)
+    for i in range(1, USER_NUMBERS_MAX + 1):
+        ids |= {"num%d" % i, "num%d_dn" % i, "num%d_up" % i}
+        ids |= {"num%d_p%d" % (i, k) for k in range(1, NUM_PRESETS + 1)}
+    return ids
+
+
+def clean_label(s, default="", n=12):
+    """a short button or line label: plain characters only"""
+    if not isinstance(s, str):
+        return default
+    s = "".join(c for c in s if 32 <= ord(c) < 127 and c not in "%|<>&\"").strip()[:n]
+    return s or default
+
+
+def clean_user_programs(x):
+    """always USER_PROGRAMS_MAX slots: {"label","path","args","show"} (an empty path = unused slot)"""
+    x = x if isinstance(x, list) else []
+    out = []
+    for i in range(USER_PROGRAMS_MAX):
+        d = x[i] if i < len(x) and isinstance(x[i], dict) else {}
+        path = d.get("path") if isinstance(d.get("path"), str) else ""
+        path = "".join(c for c in path if ord(c) >= 32).strip().strip('"')[:300]
+        args = d.get("args") if isinstance(d.get("args"), str) else ""
+        args = "".join(c for c in args if ord(c) >= 32)[:300]
+        out.append({"label": clean_label(d.get("label"), "PROG%d" % (i + 1)), "path": path, "args": args,
+                    "show": bool(d.get("show", True)) and bool(path)})
+    return out
+
+
+def clean_user_numbers(x):
+    """always USER_NUMBERS_MAX slots: a number with limits, step, unit and up to NUM_PRESETS preset values"""
+    x = x if isinstance(x, list) else []
+    out = []
+    for i in range(USER_NUMBERS_MAX):
+        d = x[i] if i < len(x) and isinstance(x[i], dict) else {}
+        lo = clean_dg_num(d.get("min"), 0.0, -1e6, 1e6)
+        hi = clean_dg_num(d.get("max"), 100.0, -1e6, 1e6)
+        if hi <= lo:
+            hi = lo + 1.0
+        step = clean_dg_num(d.get("step"), 1.0, 0.1, 1e6)
+        val = clean_dg_num(d.get("value"), lo, lo, hi)
+        pre = []
+        for v in (d.get("presets") if isinstance(d.get("presets"), list) else [])[:NUM_PRESETS]:
+            f = clean_dg_num(v, None, lo, hi)
+            if f is not None:
+                pre.append(f)
+        link = d.get("link") if d.get("link") in NUM_LINKS else ""
+        out.append({"label": clean_label(d.get("label"), "", 14), "link": link, "min": lo, "max": hi, "step": step,
+                    "value": val, "unit": clean_label(d.get("unit"), "", 4), "presets": pre})
+    return out
+
+
+def clean_custom(x):
+    """list of your own Thetis containers: {"name","columns","style","items"}"""
+    ids = custom_item_ids()
+    out, seen = [], set()
+    for d in (x if isinstance(x, list) else [])[:CUSTOM_MAX]:
+        if not isinstance(d, dict):
+            continue
+        name = clean_label(d.get("name"), "", 24)
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        items = [i for i in (d.get("items") if isinstance(d.get("items"), list) else []) if isinstance(i, str) and i in ids]
+        items = [i for k, i in enumerate(items) if i == "gap" or i not in items[:k]][:CUSTOM_ITEMS_MAX]
+        try:
+            cols = max(2, min(6, int(d.get("columns", 3))))
+        except (TypeError, ValueError):
+            cols = 3
+        out.append({"name": name, "columns": cols, "items": items,
+                    "style": d.get("style") if d.get("style") in ("default", "legacy") else "legacy"})
+    return out
+
+
+def num_text(n, cur):
+    """'MAX DRIVE 30 W' for one number slot (cur = its current value)"""
+    if not n["label"]:
+        return ""
+    if n["link"] == "dg_limit" and cur <= 0:
+        return "%s off" % n["label"]
+    v = ("%g" % cur)
+    return ("%s %s %s" % (n["label"], v, n["unit"])).strip()
 
 
 # Thetis Telemetry window items (ids shared with kpa1500_thetis_setup.py)
@@ -468,6 +579,14 @@ MMIO_COMMANDS = {
     "KPA_KEY_TOGGLE": "toggle_key", "KPA_KEY_SOFT": "key_soft", "KPA_KEY_HW": "key_hw",
     "KPA_RADIO_TUNE": "radio_tune", "KPA_RADIO_TUNE_STOP": "radio_tune_stop",
 }
+MMIO_COMMANDS.update({"KPA_OPEN_HELP": "open_help", "KPA_OPEN_PANEL": "open_panel", "KPA_OPEN_APPLET": "applet_window"})
+for _i in range(1, USER_PROGRAMS_MAX + 1):
+    MMIO_COMMANDS["KPA_RUN_%d" % _i] = ("run_program", {"n": _i})
+for _i in range(1, USER_NUMBERS_MAX + 1):
+    MMIO_COMMANDS["KPA_NUM_%d_UP" % _i] = ("num_step", {"n": _i, "d": 1})
+    MMIO_COMMANDS["KPA_NUM_%d_DN" % _i] = ("num_step", {"n": _i, "d": -1})
+    for _k in range(1, NUM_PRESETS + 1):
+        MMIO_COMMANDS["KPA_NUM_%d_P%d" % (_i, _k)] = ("num_preset", {"n": _i, "k": _k})
 TERMS = {"none": "", "cr": "\r", "lf": "\n", "crlf": "\r\n"}
 
 
@@ -1980,6 +2099,9 @@ class Bridge:
         self.applet_skin = clean_applet_skin(self.settings.get("applet_skin"))
         self.thetis_meters = clean_thetis_meters(self.settings.get("thetis_meters"))
         self.thetis_knobwin = clean_knob_window(self.settings.get("thetis_knobwin"))
+        self.user_programs = clean_user_programs(self.settings.get("user_programs"))
+        self.user_numbers = clean_user_numbers(self.settings.get("user_numbers"))
+        self.custom = clean_custom(self.settings.get("custom_containers"))
         mw_ = self.settings.get("thetis_meterswin")
         self.thetis_meterswin = {"enabled": bool(isinstance(mw_, dict) and mw_.get("enabled") is True)}
         self.tci_ws = None
@@ -3301,6 +3423,42 @@ class Bridge:
             self.save_setting("thetis_knobwin", kw)
             ok, msg = True, ("Thetis Knob window %s. Press 'Rebuild Thetis windows' to put it into Thetis."
                              % ("saved" if kw["enabled"] else "switched OFF (it is taken out at the next rebuild)"))
+        elif name == "user_programs":
+            params = params if isinstance(params, dict) else {}
+            self.user_programs = clean_user_programs(params.get("slots"))
+            self.save_setting("user_programs", self.user_programs)
+            n = len([x for x in self.user_programs if x["path"]])
+            ok, msg = True, "Your programs saved (%d in use). Press 'Rebuild Thetis windows' to put the buttons into Thetis." % n
+        elif name == "user_numbers":
+            params = params if isinstance(params, dict) else {}
+            self.user_numbers = clean_user_numbers(params.get("slots"))
+            self.save_setting("user_numbers", self.user_numbers)
+            ok, msg = True, "Your numbers saved. Press 'Rebuild Thetis windows' to put them into Thetis."
+        elif name == "custom_containers":
+            params = params if isinstance(params, dict) else {}
+            self.custom = clean_custom(params.get("list"))
+            self.save_setting("custom_containers", self.custom)
+            ok, msg = True, "Your containers saved (%d). Press 'Rebuild Thetis windows' to put them into Thetis." % len(self.custom)
+        elif name == "run_program":
+            params = params if isinstance(params, dict) else {}
+            ok, msg = self.run_program(params.get("n"))
+        elif name == "open_panel":
+            import webbrowser
+            try:
+                host = self.a.web_bind
+                if host in ("0.0.0.0", "", "localhost"):
+                    host = "127.0.0.1"
+                port = self.web.server_address[1] if self.web else self.a.web_port
+                webbrowser.open("http://%s:%d/" % (host, port))
+                ok, msg = True, "Opening the settings page"
+            except Exception as e:
+                ok, msg = False, "Could not open the settings page (%s)" % e
+        elif name == "open_help":
+            self.open_help()
+            ok, msg = True, "Opening the help"
+        elif name in ("num_step", "num_preset", "num_set"):
+            params = params if isinstance(params, dict) else {}
+            ok, msg = self.num_change(name, params)
         elif name == "thetis_meterswin":
             params = params if isinstance(params, dict) else {}
             self.thetis_meterswin = {"enabled": params.get("enabled") is True}
@@ -3526,6 +3684,20 @@ class Bridge:
             self.log("Quit requested (panel or a newer copy of the bridge)")
             threading.Timer(0.5, lambda: setattr(self, "quit", True)).start()
             ok, msg = True, "The bridge is closing"
+        elif name == "restart_bridge":
+            here = os.path.dirname(os.path.abspath(__file__))
+            bat = os.path.join(here, "start_kpa_sdr_bridge.bat")
+            try:
+                if os.name == "nt" and os.path.exists(bat):
+                    # the same start file you use by hand (keeps your options); the new copy closes this one
+                    subprocess.Popen(["cmd", "/c", "start", "KPA1500 SDR Bridge", bat], cwd=here,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                else:
+                    subprocess.Popen([sys.executable] + sys.argv, cwd=here, start_new_session=(os.name != "nt"))
+                self.log("Restart requested from the panel: a new copy is starting and will close this one")
+                ok, msg = True, "Restarting - this page reconnects in a few seconds"
+            except (OSError, ValueError) as e:
+                ok, msg = False, "Could not start a new copy (%s)" % e
         else:
             return False, "Unknown action"
         self.last_msg = msg
@@ -3605,6 +3777,84 @@ class Bridge:
         self.last_msg = "Power-on: no confirmation after 15 s"
         self.log("Power-on NOT confirmed. Check amp menu NET WAKE on LAN = ON, "
                  "the MAC address, and that the PC and amp are on the same LAN.")
+
+    # ---- your own programs and numbers (Thetis buttons KPA_RUN_n, KPA_NUM_n_UP/DN/Pk) -------------------------
+    def run_program(self, n):
+        """start the program in slot n (the program, its folder and its arguments come only from your settings)"""
+        try:
+            i = int(n) - 1
+            slot = self.user_programs[i]
+            if i < 0:
+                raise IndexError
+        except (TypeError, ValueError, IndexError):
+            return False, "No such program slot"
+        path = slot["path"]
+        if not path:
+            return False, "Program slot %d is empty" % (i + 1)
+        try:
+            folder = os.path.dirname(path) if os.path.isabs(path) and os.path.isdir(os.path.dirname(path)) else None
+            if os.name == "nt" and not slot["args"].strip():
+                os.startfile(path)                  # opens programs, shortcuts, .bat files and documents alike
+            else:
+                import shlex
+                argv = [path] + (shlex.split(slot["args"], posix=(os.name != "nt")) if slot["args"].strip() else [])
+                kw = {"cwd": folder}
+                if os.name == "nt":
+                    kw["creationflags"] = 0x00000008 | 0x00000200      # detached, own process group
+                else:
+                    kw["start_new_session"] = True
+                subprocess.Popen(argv, **kw)
+            self.log("Started program %d (%s): %s %s" % (i + 1, slot["label"], path, slot["args"]))
+            return True, "Started %s" % slot["label"]
+        except (OSError, ValueError) as e:
+            self.log("Could not start program %d (%s): %s" % (i + 1, path, e))
+            return False, "Could not start %s (%s)" % (slot["label"], e)
+
+    def num_cur(self, i):
+        n = self.user_numbers[i]
+        if n["link"] == "dg_limit":
+            return self.dg_limit
+        if n["link"] == "tune_timeout":
+            return float(self.tune_timeout)
+        return n["value"]
+
+    def num_change(self, name, params):
+        try:
+            i = int(params.get("n")) - 1
+            n = self.user_numbers[i]
+            if i < 0:
+                raise IndexError
+        except (TypeError, ValueError, IndexError):
+            return False, "No such number"
+        if not n["label"]:
+            return False, "Number %d is not set up" % (i + 1)
+        cur = self.num_cur(i)
+        if name == "num_step":
+            try:
+                v = cur + (1 if int(params.get("d", 1)) >= 0 else -1) * n["step"]
+            except (TypeError, ValueError):
+                return False, "Bad step"
+        elif name == "num_preset":
+            try:
+                v = n["presets"][int(params.get("k")) - 1]
+            except (TypeError, ValueError, IndexError):
+                return False, "No such preset"
+        else:
+            v = clean_dg_num(params.get("value"), None, -1e9, 1e9)
+            if v is None:
+                return False, "The value must be a number"
+        v = round(max(n["min"], min(n["max"], v)), 2)
+        if n["link"] == "dg_limit":
+            ok, msg = self.do_action("drive_guard", {"limit": "off" if v < 1 else v})
+        elif n["link"] == "tune_timeout":
+            ok, msg = self.do_action("tune_timeout", {"s": int(round(v))})
+        else:
+            n["value"] = v
+            self.save_setting("user_numbers", self.user_numbers)
+            ok, msg = True, num_text(n, v)
+        if ok:
+            self.log("%s" % num_text(n, self.num_cur(i)))
+        return ok, msg
 
     def open_help(self):
         import webbrowser
@@ -3745,6 +3995,9 @@ class Bridge:
             "thetis_buttons": self.thetis_buttons, "thetis_buttons_default": TB_DEFAULT,
             "thetis_meters": self.thetis_meters, "thetis_meters_default": TM_DEFAULT,
             "thetis_knobwin": self.thetis_knobwin, "thetis_meterswin": self.thetis_meterswin,
+            "user_programs": self.user_programs, "custom_containers": self.custom,
+            "user_numbers": [dict(n, now=self.num_cur(i), text=num_text(n, self.num_cur(i)))
+                             for i, n in enumerate(self.user_numbers)],
             "knob": dict(self.knob_cfg, connected=bool(self.knob and self.knob.connected),
                          device=self.knob.device if self.knob else "", error=self.knob.error if self.knob else "",
                          mode=self.knob_mode, mode_name=KNOB_MODES[self.knob_mode][0],
@@ -3816,6 +4069,8 @@ class Bridge:
             "drvlim": int(self.drive_guard_state()["warn"]),
             "drvlim_text": self.drive_guard_state()["text"],
             "warn_pre": self.warn_pre(na),
+            **{"num%d_text" % (i + 1): num_text(n, self.num_cur(i)) for i, n in enumerate(self.user_numbers)},
+            **{"num%d" % (i + 1): self.num_cur(i) for i in range(len(self.user_numbers))},
             "head_ctrl": self.head_line(self.thetis_buttons.get("title"), TITLE_CTRL, na),
             "head_tele": self.head_line(self.thetis_meters.get("title"), TITLE_TELE, na),
             "warn_on": int(na["warn"] or self.drive_guard_state()["warn"]),
@@ -4145,7 +4400,8 @@ class Bridge:
                     params = body.get("params")
                 except (ValueError, AttributeError):
                     return self._send(400, '{"error":"bad request"}')
-                if str(action) in ("quit_bridge", "applet_window") and not self._local():
+                if str(action) in ("quit_bridge", "restart_bridge", "applet_window", "user_programs", "run_program",
+                                   "open_panel") and not self._local():
                     return self._send(200, json.dumps({"ok": False, "message":
                                       "That can only be done on the bridge computer itself"}))
                 if str(action) == "web_password" and not self._local():
@@ -4385,6 +4641,9 @@ MMIO_VAR_HELP = {
     "lp_x": "reactance part of the impedance, ohms (negative = capacitive)",
     "lp_dbm": "power in dBm",
 }
+for _i in range(1, USER_NUMBERS_MAX + 1):
+    MMIO_VAR_HELP["num%d" % _i] = "your number %d: its current value (for example your maximum drive in watts)" % _i
+    MMIO_VAR_HELP["num%d_text" % _i] = "your number %d as a line of text, e.g. MAX DRIVE 30 W (empty when the number is not set up)" % _i
 
 MMIO_CMD_HELP = {
     "KPA_OPERATE": "Put the amplifier in OPERATE",
@@ -4423,7 +4682,17 @@ MMIO_CMD_HELP = {
     "KPA_KEY_HW": "Amp keying: hardware KEY IN only",
     "KPA_DUMMY_OK": "DUMMY OK: a dummy load is connected on purpose - silences the 'no antenna?' "
                     "warning on this band (press again to undo)",
+    "KPA_OPEN_HELP": "Show this help in the browser (on the bridge computer)",
+    "KPA_OPEN_PANEL": "Open the browser panel with all the settings (on the bridge computer)",
+    "KPA_OPEN_APPLET": "Open the Applet window",
 }
+for _i in range(1, USER_PROGRAMS_MAX + 1):
+    MMIO_CMD_HELP["KPA_RUN_%d" % _i] = "Start your program number %d (Settings > Programs and numbers)" % _i
+for _i in range(1, USER_NUMBERS_MAX + 1):
+    MMIO_CMD_HELP["KPA_NUM_%d_UP" % _i] = "Your number %d: one step up" % _i
+    MMIO_CMD_HELP["KPA_NUM_%d_DN" % _i] = "Your number %d: one step down" % _i
+    for _k in range(1, NUM_PRESETS + 1):
+        MMIO_CMD_HELP["KPA_NUM_%d_P%d" % (_i, _k)] = "Your number %d: set preset value %d" % (_i, _k)
 
 
 def _P(t):
@@ -5879,6 +6148,65 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
 .tbtns.legacy button.lit{background:#284096;color:#fff;border-color:#284096}
 .tbtns.legacy button:hover{background:#464646}
 .editing #thetis{pointer-events:none;opacity:.8}
+/* ---- Settings and layout: sections menu, cards, colour ---- */
+#drawer{padding:0;border:1px solid var(--line);border-radius:.8rem;overflow:hidden;box-shadow:0 8px 28px rgba(8,28,44,.14)}
+.dtop{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;padding:.65rem 1rem;color:#fff;
+background:linear-gradient(100deg,#0f5f78,#1a86a8 60%,#27a3a0)}
+.dtop b{font-size:1.05rem;letter-spacing:.01em}.dtop .small{color:rgba(255,255,255,.85)}
+.dtop a{color:#fff}
+.dtop .dsp{flex:1}
+.dbr{min-height:1.9rem;padding:.2rem .8rem;border-radius:.5rem;border:1px solid rgba(255,255,255,.7);background:rgba(255,255,255,.14);color:#fff;font-weight:600}
+.dbr:hover{background:rgba(255,255,255,.28);border-color:#fff}
+.dbr.dst{background:#b3261e;border-color:#ffb4ab}
+.dbr.dst:hover{background:#d0382f;border-color:#fff}
+.dwrap{display:grid;grid-template-columns:14rem minmax(0,1fr);min-height:26rem}
+#dnav{display:flex;flex-direction:column;gap:.12rem;padding:.7rem .55rem;border-right:1px solid var(--line);
+background:color-mix(in srgb,var(--bg) 70%,var(--card))}
+#dnav button{display:flex;align-items:center;gap:.6rem;text-align:left;border:0;background:transparent;
+border-radius:.55rem;padding:.4rem .6rem;min-height:2.15rem;font-size:.88rem;color:var(--fg)}
+#dnav button i{width:.65rem;height:.65rem;border-radius:50%;background:var(--c);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent)}
+#dnav button:hover{background:var(--btn)}
+#dnav button.on{background:var(--card);font-weight:700;box-shadow:inset 3px 0 0 var(--c),0 1px 4px rgba(0,0,0,.14)}
+#dbody{padding:1rem 1.3rem 1.2rem;min-width:0}
+.dpane{display:none}.dpane.on{display:block}
+.dpane>h3{margin:0;font-size:1.2rem;display:flex;align-items:center;gap:.55rem}
+.dpane>h3:before{content:"";width:.3rem;height:1.3rem;border-radius:.2rem;background:var(--c)}
+.dpane>.dsubt{color:var(--fg2);font-size:.82rem;margin:.15rem 0 .9rem .85rem;max-width:46rem}
+.dpane .dsub{font-weight:700;font-size:.86rem;margin:1.1rem 0 .45rem;padding:.3rem .7rem;border-radius:.4rem;
+background:color-mix(in srgb,var(--c) 14%,var(--card));border-left:3px solid var(--c)}
+.dpane .dsub .small{font-weight:400}
+.dpane .drow{gap:.65rem 1rem;margin-bottom:.65rem}
+.dpane .small{line-height:1.45}
+.dpane button,.dpane select,.dpane input[type=text],.dpane input[type=number],.dpane input[type=password]{border-radius:.5rem}
+.dpane select,.dpane input[type=text],.dpane input[type=number],.dpane input[type=password]{padding:.3rem .5rem;min-height:2rem}
+.dpane button:hover{border-color:var(--c);background:color-mix(in srgb,var(--c) 10%,var(--btn))}
+.dpane button.act{background:var(--c);border-color:var(--c);color:#fff;font-weight:600}
+.dpane button.act:hover{filter:brightness(1.1);background:var(--c)}
+.dpane input[type=checkbox]{accent-color:var(--c);width:1.05rem;height:1.05rem}
+.dpane input[type=range]{accent-color:var(--c)}
+.dpane .tbi{border-radius:.5rem;background:var(--card);border-color:color-mix(in srgb,var(--c) 35%,var(--line))}
+.dpane .tblist{gap:.4rem}
+.dpane .ktable{padding:.6rem .7rem;border:1px solid var(--line);border-radius:.6rem;background:var(--bg);max-width:none}
+.dpane textarea{border-radius:.5rem}
+.dfoot{display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;padding:.6rem 1rem;border-top:1px solid var(--line);
+background:color-mix(in srgb,var(--bg) 70%,var(--card))}
+.dfoot .drow{margin:0}
+.dfoot a{color:var(--acc)}
+.ugrid{display:grid;gap:.35rem .5rem;align-items:center;margin:.4rem 0 .6rem;overflow-x:auto}
+.ugrid .uh{font-size:.75rem;font-weight:700;color:var(--fg2)}
+.ugrid .un{font-weight:700;color:var(--fg2);text-align:center}
+.ugrid input[type=text],.ugrid select{width:100%;min-width:0}
+.unow{display:flex;align-items:center;gap:.3rem;font-size:.82rem}
+.unow button{min-height:1.6rem;padding:0 .5rem}
+.ucard{border:1px solid var(--line);border-radius:.7rem;padding:.7rem .8rem;margin:.5rem 0 .8rem;background:var(--bg)}
+.ucard .tblist{grid-template-columns:repeat(auto-fill,minmax(17rem,1fr))}
+
+.dfoot button.act{background:linear-gradient(100deg,#0f5f78,#1a86a8);border-color:#0f5f78;color:#fff;font-weight:700;padding:.4rem 1.4rem}
+.editing .tile{outline-color:#1a86a8;border-radius:.6rem}
+.tools button{border-radius:.4rem}
+@media (max-width:760px){.dwrap{grid-template-columns:1fr}
+#dnav{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:.4rem}
+#dnav button{white-space:nowrap}}
 </style></head><body>
 <div class="top"><h1>KPA1500 &amp; LP-100A</h1><span id="ver" class="small dry"></span><span id="ampbadge" title="Is the amplifier answering at its network address?">AMP ?</span><span id="radiobadge" title="Which radio program the bridge is connected to. Thetis here means Thetis, Thetis HL2 or SDR-VST3.">Radio ?</span><span id="dry" class="small dry"></span>
 <a id="helplink" class="hbtn" href="/help" target="_blank" rel="noopener">Help</a>
@@ -6013,6 +6341,18 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <button id="d_lpconnect">Connect</button><button id="d_lpdisc">Disconnect</button><button id="d_lpscan">Scan ports</button>
   <span id="d_lpstat" class="small"></span>
  </div>
+ <div class="dh">Programs <span class="small">(start your own programs from a Thetis or panel button)</span></div>
+ <div class="small">Fill a slot with a label (it is the button text), the program to start and, if it needs them, arguments. Use a slot as a button by adding it to a container in <b>Custom containers</b>. A button can only start the program in its slot: nothing can start another program. These slots can only be changed on the bridge computer itself.</div>
+ <div id="u_prog"></div>
+ <div class="drow" id="u_prog_row"><span id="u_prog_msg" class="small"></span></div>
+ <div class="dh">Numbers <span class="small">(settings you can change with - and + buttons or presets, for example a maximum safe drive)</span></div>
+ <div class="small">Give a number a name to switch it on. <b>Over-drive limit</b> and <b>TUNE auto-stop</b> change those real bridge settings; <b>stored number</b> just stores a value you can show in Thetis (variable <b>num1</b> to <b>num6</b>). Presets are buttons that jump straight to a value.</div>
+ <div id="u_num"></div>
+ <div class="drow" id="u_num_row"><span id="u_num_msg" class="small"></span></div>
+ <div class="dh">Custom containers <span class="small">(your own Thetis windows with the buttons and numbers you choose)</span></div>
+ <div class="small">Make as many as you like (up to 8). Each one becomes its own Thetis window. Save, then rebuild the Thetis windows. A container you delete here is removed from Thetis at the next rebuild.</div>
+ <div id="u_cust"></div>
+ <div class="drow" id="u_cust_row"><span id="u_cust_msg" class="small"></span></div>
  <div class="drow" style="margin-top:.6rem">
   <button id="d_done" class="act">Done</button>
   <span class="small"><span id="ver2"></span> <a href="/help" target="_blank" rel="noopener">Open the full help</a>. Bridge settings are saved by the bridge (kpa1500_settings.json); layouts are saved in this browser.</span>
@@ -6774,6 +7114,199 @@ $('d_import').addEventListener('click',()=>{
 
 render();refresh();setInterval(refresh,300);
 })();
+</script>
+<script>
+/* Settings and layout: group the drawer into a menu of sections (no setting changes) */
+(function(){try{
+const dr=document.getElementById('drawer');if(!dr||dr.dataset.ui)return;dr.dataset.ui='1';
+const COL=['#1a86a8','#2f7fd1','#d98a1c','#d9483b','#8a5cc7','#2e9e5b','#e0702a','#5f7686','#7d8a93','#1a9c96'];
+const done=document.getElementById('d_done'),foot=done?done.closest('.drow'):null;
+const groups=[];let cur=null;
+[...dr.children].forEach(el=>{
+ if(el===foot)return;
+ if(el.classList.contains('dh')){cur={head:el,els:[]};groups.push(cur);}
+ else if(cur)cur.els.push(el);
+});
+if(!groups.length)return;
+const mk=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!==undefined)e.innerHTML=h;return e;};
+const nav=mk('div');nav.id='dnav';nav.setAttribute('role','tablist');
+const body=mk('div');body.id='dbody';
+const panes=[],btns=[];
+groups.forEach((g,i)=>{
+ const sm=g.head.querySelector('.small');const sub=sm?sm.textContent.replace(/^\(|\)$/g,''):'';
+ if(sm)sm.remove();
+ const title=g.head.textContent.trim().replace(/\?$/,'?');
+ const pane=mk('div','dpane');pane.style.setProperty('--c',COL[i%COL.length]);
+ const h=mk('h3');h.textContent=title;pane.append(h);
+ if(sub){const s=mk('div','dsubt');s.textContent=sub;pane.append(s);}
+ g.els.forEach(e=>pane.append(e));
+ body.append(pane);panes.push(pane);
+ const b=mk('button');b.type='button';b.setAttribute('role','tab');b.style.setProperty('--c',COL[i%COL.length]);
+ const dot=mk('i');b.append(dot,document.createTextNode(title.replace(/ check$/,'')));
+ b.addEventListener('click',()=>show(i));nav.append(b);btns.push(b);
+});
+function show(i){
+ panes.forEach((p,k)=>{p.classList.toggle('on',k===i);btns[k].classList.toggle('on',k===i);btns[k].setAttribute('aria-selected',k===i);});
+ try{sessionStorage.setItem('kpaSetTab',String(i));}catch(e){}
+}
+const top=mk('div','dtop','<b>Settings and layout</b><span class="small">Pick a section on the left. Changes are saved as you make them.</span><span class="dsp"></span>');
+const call=async a=>{const r=await fetch('/api/cmd'+location.search,{method:'POST',headers:{'Content-Type':'application/json','X-KPA':'1'},body:JSON.stringify({action:a,params:{}})});return r.json();};
+const mb=(t,c)=>{const b=mk('button','dbr '+c);b.type='button';b.textContent=t;return b;};
+const bRe=mb('Restart bridge','dre'),bSt=mb('Stop bridge','dst');
+bRe.title='Closes this bridge and starts a new copy with the same start file';bSt.title='Closes the bridge (the amplifier is not changed)';
+const note=t=>{const m=document.getElementById('msg');if(m){m.textContent=t;m.className='msg';}};
+bRe.addEventListener('click',async()=>{
+ if(!confirm('Restart the bridge? It closes and starts again; this page reconnects in a few seconds. The amplifier is not changed.'))return;
+ try{const j=await call('restart_bridge');note(j.message||'');if(!j.ok)return;}catch(e){note('Request failed: '+e);return;}
+ let n=0;const t=setInterval(async()=>{n++;try{const r=await fetch('/api/state'+location.search,{cache:'no-store'});if(r.ok&&n>3){clearInterval(t);location.reload();}}catch(e){}if(n>40)clearInterval(t);},1500);
+});
+bSt.addEventListener('click',async()=>{
+ if(!confirm('Stop the bridge? The amplifier is not changed. This page stops working until you start the bridge again (start_kpa_sdr_bridge.bat).'))return;
+ try{const j=await call('quit_bridge');note(j.message||'The bridge is closing');}catch(e){note('Request failed: '+e);}
+});
+top.append(bRe,bSt);
+const wrap=mk('div','dwrap');wrap.append(nav,body);
+const f=mk('div','dfoot');if(foot)f.append(foot);
+dr.replaceChildren(top,wrap,f);
+let st=0;try{st=parseInt(sessionStorage.getItem('kpaSetTab')||'0',10)||0;}catch(e){}
+show(Math.min(Math.max(st,0),panes.length-1));
+}catch(e){if(window.console)console.log('settings menu:',e);}})();
+</script>
+<script>
+/* Settings: your own programs, numbers and containers */
+(function(){try{
+const $=id=>document.getElementById(id);
+const mk=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!==undefined)e.textContent=h;return e;};
+const Q=location.search;
+async function api(a,p){const r=await fetch('/api/cmd'+Q,{method:'POST',headers:{'Content-Type':'application/json','X-KPA':'1'},body:JSON.stringify({action:a,params:p||{}})});return r.json();}
+async function state(){const r=await fetch('/api/state'+Q,{cache:'no-store'});return r.json();}
+const BUILTIN=[['opr','OPERATE / STANDBY'],['atu','ATU IN / BYP'],['ant','ANT 1 / 2'],['amp','AMP ON / OFF'],['tune','TUNE (radio)'],['atutune','ATU TUNE'],['sot','SoT'],['key','KEY soft / hw'],['dummy','DUMMY OK'],['fault','FAULT clear'],['lpalarm','LP ALARM (LP)'],['lpmode','LP MODE (LP)'],['fandn','FAN -'],['fanup','FAN +']];
+const OPEN=[['open_help','HELP (opens the help)'],['open_panel','SETTINGS (opens this page)'],['open_applet','APPLET (opens the Applet)']];
+let ST=null;
+function say(id,t,ok){const e=$(id);if(e){e.textContent=t;e.style.color=ok===false?'var(--bad)':'var(--ok)';}}
+function rebuildBtn(){const b=mk('button','act','Rebuild Thetis windows now');b.type='button';b.title='Same as the button in the Thetis windows section';b.addEventListener('click',()=>{const o=$('d_tbbuild');if(o)o.click();});return b;}
+
+/* ---- programs ---- */
+function drawProg(){
+ const host=$('u_prog');host.textContent='';
+ const g=mk('div','ugrid');g.style.gridTemplateColumns='2rem 9rem minmax(10rem,1fr) 12rem';
+ ['#','Button label','Program (full path, shortcut or .bat file)','Arguments (optional)'].forEach(t=>g.append(mk('div','uh',t)));
+ ST.user_programs.forEach((p,i)=>{
+  g.append(mk('div','un',String(i+1)));
+  const l=mk('input');l.type='text';l.maxLength=12;l.value=p.label;l.dataset.k='label';l.dataset.i=i;
+  const pa=mk('input');pa.type='text';pa.maxLength=300;pa.value=p.path;pa.dataset.k='path';pa.dataset.i=i;pa.placeholder='C:\\Program Files\\...\\program.exe';
+  const ar=mk('input');ar.type='text';ar.maxLength=300;ar.value=p.args;ar.dataset.k='args';ar.dataset.i=i;
+  g.append(l,pa,ar);
+ });
+ host.append(g);
+}
+async function saveProg(){
+ const rows=ST.user_programs.map(p=>Object.assign({},p));
+ $('u_prog').querySelectorAll('input').forEach(e=>{rows[+e.dataset.i][e.dataset.k]=e.value;});
+ const j=await api('user_programs',{slots:rows});say('u_prog_msg',j.message||j.error,j.ok!==false);await load();
+}
+
+/* ---- numbers ---- */
+const LINKS=[['','Stored number'],['dg_limit','Over-drive limit (W)'],['tune_timeout','TUNE auto-stop (s)']];
+function drawNum(){
+ const host=$('u_num');host.textContent='';
+ const g=mk('div','ugrid');g.style.gridTemplateColumns='2rem 8rem 11rem 4rem 4rem 3.6rem 3.4rem 8rem 12rem';
+ ['#','Name','What it is','Min','Max','Step','Unit','Presets (up to 4)','Now'].forEach(t=>g.append(mk('div','uh',t)));
+ ST.user_numbers.forEach((n,i)=>{
+  g.append(mk('div','un',String(i+1)));
+  const f=(k,w,ml)=>{const e=mk('input');e.type='text';e.value=k==='presets'?(n.presets||[]).join(', '):n[k];e.dataset.k=k;e.dataset.i=i;e.style.width=w;if(ml)e.maxLength=ml;return e;};
+  const sel=mk('select');sel.dataset.k='link';sel.dataset.i=i;LINKS.forEach(([v,t])=>{const o=mk('option',null,t);o.value=v;if(v===n.link)o.selected=true;sel.append(o);});
+  const now=mk('div','unow');
+  const dn=mk('button',null,'-');dn.type='button';const up=mk('button',null,'+');up.type='button';
+  const val=mk('span',null,n.label?(n.text||''):'');
+  dn.addEventListener('click',async()=>{await api('num_step',{n:i+1,d:-1});await load(true);});
+  up.addEventListener('click',async()=>{await api('num_step',{n:i+1,d:1});await load(true);});
+  if(n.label)now.append(dn,val,up);
+  g.append(f('label','100%',14),sel,f('min','100%'),f('max','100%'),f('step','100%'),f('unit','100%',4),f('presets','100%'),now);
+ });
+ host.append(g);
+}
+async function saveNum(){
+ const rows=ST.user_numbers.map(n=>Object.assign({},n));
+ $('u_num').querySelectorAll('input,select').forEach(e=>{
+  const r=rows[+e.dataset.i],k=e.dataset.k;
+  if(k==='presets')r.presets=e.value.split(/[ ,;]+/).filter(x=>x!=='').map(Number).filter(x=>!isNaN(x));
+  else if(k==='min'||k==='max'||k==='step')r[k]=parseFloat(e.value);
+  else r[k]=e.value;
+ });
+ const j=await api('user_numbers',{slots:rows});say('u_num_msg',j.message||j.error,j.ok!==false);await load();
+}
+
+/* ---- containers ---- */
+function itemName(id){
+ const b=BUILTIN.concat(OPEN).find(x=>x[0]===id);if(b)return b[1];
+ if(id==='gap')return '(blank space)';if(id==='title')return 'Title line';
+ let m=id.match(/^prog(\d)$/);if(m){const p=ST.user_programs[+m[1]-1];return 'Program '+m[1]+': '+(p?p.label:'');}
+ m=id.match(/^num(\d)(?:_(dn|up|p(\d)))?$/);
+ if(m){const n=ST.user_numbers[+m[1]-1]||{},l=n.label||('number '+m[1]);
+  if(!m[2])return 'Line: '+l;if(m[2]==='dn')return l+' -';if(m[2]==='up')return l+' +';
+  const v=(n.presets||[])[+m[3]-1];return l+' preset '+m[3]+(v!==undefined?' ('+v+')':'');}
+ return id;
+}
+function addChoices(sel){
+ const og=(t,arr)=>{const g=document.createElement('optgroup');g.label=t;arr.forEach(([v,n])=>{const o=mk('option',null,n);o.value=v;g.append(o);});sel.append(g);};
+ sel.append(Object.assign(mk('option',null,'Add an item...'),{value:''}));
+ og('Amplifier buttons',BUILTIN);og('Open',OPEN);
+ og('Your programs',ST.user_programs.map((p,i)=>['prog'+(i+1),(i+1)+': '+p.label+(p.path?'':' (empty)')]));
+ const nums=[];ST.user_numbers.forEach((n,i)=>{if(!n.label)return;const k=i+1;nums.push(['num'+k,n.label+' - line with the value'],['num'+k+'_dn',n.label+' -  button'],['num'+k+'_up',n.label+' +  button']);(n.presets||[]).forEach((v,q)=>nums.push(['num'+k+'_p'+(q+1),n.label+' preset '+v+' button']));});
+ if(nums.length)og('Your numbers',nums);
+ og('Layout',[['title','Title line'],['gap','Blank space']]);
+}
+let CUST=[];
+function drawCust(){
+ const host=$('u_cust');host.textContent='';
+ if(!CUST.length)host.append(mk('div','small','No containers yet. Press "Add a container".'));
+ CUST.forEach((c,ci)=>{
+  const card=mk('div','ucard');
+  const top=mk('div','drow');
+  const nm=mk('input');nm.type='text';nm.maxLength=24;nm.value=c.name;nm.addEventListener('input',()=>{c.name=nm.value;});
+  const cols=mk('select');for(let k=2;k<=6;k++){const o=mk('option',null,k+' columns');o.value=k;if(k===c.columns)o.selected=true;cols.append(o);}
+  cols.addEventListener('change',()=>{c.columns=+cols.value;});
+  const st=mk('select');[['legacy','Legacy look'],['default','Standard look']].forEach(([v,t])=>{const o=mk('option',null,t);o.value=v;if(v===c.style)o.selected=true;st.append(o);});
+  st.addEventListener('change',()=>{c.style=st.value;});
+  const del=mk('button','danger','Delete this container');del.type='button';del.addEventListener('click',()=>{if(confirm('Delete the container "'+c.name+'"? (It is taken out of Thetis at the next rebuild.)')){CUST.splice(ci,1);drawCust();}});
+  const l1=mk('label');l1.append('Name ',nm);top.append(l1,cols,st,del);card.append(top);
+  const list=mk('div','tblist');
+  c.items.forEach((id,k)=>{
+   const it=mk('div','tbi');
+   const lf=mk('button',null,'\u25C0');lf.type='button';lf.addEventListener('click',()=>{if(k>0){[c.items[k-1],c.items[k]]=[c.items[k],c.items[k-1]];drawCust();}});
+   const sp=mk('span',null,(k+1)+'. '+itemName(id));
+   const rt=mk('button',null,'\u25B6');rt.type='button';rt.addEventListener('click',()=>{if(k<c.items.length-1){[c.items[k+1],c.items[k]]=[c.items[k],c.items[k+1]];drawCust();}});
+   const x=mk('button',null,'\u2715');x.type='button';x.addEventListener('click',()=>{c.items.splice(k,1);drawCust();});
+   it.append(lf,sp,rt,x);list.append(it);
+  });
+  card.append(list);
+  const add=mk('select');addChoices(add);add.addEventListener('change',()=>{if(add.value){if(c.items.length<31)c.items.push(add.value);drawCust();}});
+  const r=mk('div','drow');r.append(add);card.append(r);
+  card.append(mk('div','small','Order in Thetis: the title line, then the number lines, then all the buttons in the order shown here.'));
+  host.append(card);
+ });
+}
+async function saveCust(){
+ const j=await api('custom_containers',{list:CUST});say('u_cust_msg',j.message||j.error,j.ok!==false);
+ const s=await state();ST=s;CUST=JSON.parse(JSON.stringify(s.custom_containers||[]));drawCust();
+}
+async function load(keep){
+ ST=await state();
+ if(!keep||!CUST.length)CUST=JSON.parse(JSON.stringify(ST.custom_containers||[]));
+ if(!ST.user_programs)return;
+ const act=document.activeElement;const typing=act&&/^(INPUT|SELECT)$/.test(act.tagName)&&act.closest&&act.closest('#u_prog,#u_num');
+ if(!typing){drawProg();drawNum();}
+ if(!keep)drawCust();
+}
+const mkbtn=(t,c,f)=>{const b=mk('button',c,t);b.type='button';b.addEventListener('click',f);return b;};
+if($('u_prog_row'))$('u_prog_row').prepend(mkbtn('Save programs','act',saveProg));
+if($('u_num_row'))$('u_num_row').prepend(mkbtn('Save numbers','act',saveNum));
+if($('u_cust_row')){$('u_cust_row').prepend(mkbtn('Add a container','',()=>{if(CUST.length<8){CUST.push({name:'My container '+(CUST.length+1),columns:3,style:'legacy',items:[]});drawCust();}}),mkbtn('Save containers','act',saveCust));}
+['u_prog_row','u_num_row','u_cust_row'].forEach(id=>{const r=$(id);if(r)r.append(rebuildBtn());});
+load();
+document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('#dnav button');if(b)setTimeout(()=>load(true),50);});
+}catch(e){if(window.console)console.log('user settings:',e);}})();
 </script></body></html>
 """
 
@@ -7410,6 +7943,48 @@ def selftest():
           get_state()["thetis_meterswin"] == {"enabled": False} and bridge.do_action("thetis_meterswin", {"enabled": True})[0]
           and bridge.settings["thetis_meterswin"] == {"enabled": True} and get_state()["thetis_meterswin"]["enabled"] is True)
     bridge.do_action("thetis_meterswin", {"enabled": False})
+    # ---- your own programs, numbers and containers
+    ok_, _m = bridge.do_action("user_programs", {"slots": [{"label": "LOG %x", "path": sys.executable, "args": "-c pass", "show": True},
+                                                          {"label": "", "path": ""}]})
+    check("programs: 8 slots kept, label cleaned, empty slot hidden",
+          ok_ and len(bridge.user_programs) == 8 and bridge.user_programs[0]["label"] == "LOG x"
+          and bridge.user_programs[1]["show"] is False and bridge.user_programs[2]["label"] == "PROG3")
+    ok_, m_ = bridge.do_action("run_program", {"n": 1})
+    check("a program can be started from its slot", ok_ and "Started" in m_)
+    check("an empty or bad slot is refused", not bridge.do_action("run_program", {"n": 2})[0]
+          and not bridge.do_action("run_program", {"n": 99})[0] and not bridge.do_action("run_program", {"n": "x"})[0]
+          and not bridge.do_action("run_program", {"n": 0})[0])
+    check("a Thetis button string can only name a slot, never a path",
+          MMIO_COMMANDS["KPA_RUN_1"] == ("run_program", {"n": 1}) and "KPA_RUN_9" not in MMIO_COMMANDS)
+    bridge.do_action("user_numbers", {"slots": [
+        {"label": "MAX DRIVE", "link": "dg_limit", "min": 0, "max": 100, "step": 5, "unit": "W", "presets": [20, 30, 500]},
+        {"label": "MY NUM", "link": "", "min": 1, "max": 10, "step": 2, "value": 4}]})
+    check("numbers: 6 slots, presets kept inside the range", len(bridge.user_numbers) == 6
+          and bridge.user_numbers[0]["presets"] == [20.0, 30.0, 100.0] and bridge.user_numbers[2]["label"] == "")
+    ok1 = bridge.do_action("num_set", {"n": 1, "value": 30})[0]
+    check("a number linked to the drive limit sets the drive limit", ok1 and bridge.dg_limit == 30.0
+          and bridge.mmio_vars()["num1_text"] == "MAX DRIVE 30 W" and bridge.mmio_vars()["num1"] == 30.0)
+    bridge.do_action("num_step", {"n": 1, "d": 1})
+    bridge.do_action("num_preset", {"n": 1, "k": 1})
+    check("step up and a preset work", bridge.dg_limit == 20.0)
+    bridge.do_action("num_set", {"n": 1, "value": 999})
+    check("a number stays inside its limits", bridge.dg_limit == 100.0)
+    bridge.do_action("num_set", {"n": 1, "value": 0})
+    check("0 on a drive-limit number switches the limit off", bridge.dg_limit == 0.0 and bridge.mmio_vars()["num1_text"] == "MAX DRIVE off")
+    bridge.do_action("num_step", {"n": 2, "d": -1})
+    bridge.do_action("num_step", {"n": 2, "d": -1})
+    check("a stored number steps and stops at its minimum", bridge.user_numbers[1]["value"] == 1.0
+          and bridge.settings["user_numbers"][1]["value"] == 1.0 and not bridge.do_action("num_step", {"n": 5})[0])
+    bridge.do_action("custom_containers", {"list": [
+        {"name": "Radio | tools", "columns": 9, "items": ["open_help", "prog1", "prog99", "num1", "num1_dn", "num1_up", "open_help", "gap", "x"]},
+        {"name": "Radio | tools", "items": ["opr"]}, {"name": "", "items": ["opr"]}]})
+    check("containers: names and items cleaned, duplicates dropped",
+          len(bridge.custom) == 1 and bridge.custom[0]["name"] == "Radio  tools"
+          and bridge.custom[0]["columns"] == 6
+          and bridge.custom[0]["items"] == ["open_help", "prog1", "num1", "num1_dn", "num1_up", "gap"])
+    bridge.do_action("custom_containers", {"list": []})
+    bridge.do_action("user_programs", {"slots": []})
+    bridge.do_action("user_numbers", {"slots": []})
     st = get_state()
     check("panel state shows the knob (connected, mode, last press)",
           st["knob"]["connected"] and st["knob"]["mode"] == "vfoa" and st["knob"]["last"] == "X1S")
