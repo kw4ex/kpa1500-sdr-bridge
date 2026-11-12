@@ -4,7 +4,7 @@
 
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
-Design and on-air testing by KW4EX. Version 2.43.
+Design and on-air testing by KW4EX. Version 2.44.
 
 ## What it does
 - Follows the radio frequency so the amplifier changes band by itself.

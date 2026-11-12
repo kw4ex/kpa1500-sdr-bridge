@@ -150,7 +150,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.43"
+VERSION = "2.44"
 BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -1536,6 +1536,7 @@ body.stale #app>*{opacity:.45}
   <div class="ban bad" id="bFault"></div>
   <div class="ban warn" id="bNoAnt"></div>
   <div class="ban warn" id="bDrive"></div>
+  <div class="ban warn" id="bPort"></div>
   <div class="ban bad" id="bDown">BRIDGE NOT RUNNING - data frozen</div>
  </div>
  <div class="sec" id="s_telemetry" data-sec="telemetry"><h2>Telemetry</h2><div class="grid" id="gTel"></div></div>
@@ -1648,6 +1649,7 @@ function render(s){
  $('hFreq').textContent=m.amp_freq||'---';const bw=$('bFollow');if(m.amp_following===0&&/!/.test(m.amp_freq_line||'')){bw.textContent='Amp frequency: '+m.amp_freq_line;bw.classList.add('show');}else bw.classList.remove('show');
  const bf=$('bFault');if(m.amp_fault){bf.textContent='FAULT: '+(m.amp_fault_text||m.amp_fault);bf.classList.add('show');}else bf.classList.remove('show');
  const bn=$('bNoAnt');if(m.noant==1){bn.textContent=m.noant_text||'ANTENNA?';bn.classList.add('show');}else bn.classList.remove('show');
+ const bp=$('bPort');if(m.portwarn==1){bp.textContent=m.portwarn_text||'A WINDOWS RESERVED PORT BLOCKS THETIS - see Help';bp.classList.add('show');}else bp.classList.remove('show');
  const bd=$('bDrive');if(m.drvlim==1){bd.textContent=m.drvlim_text||'DRIVE OVER LIMIT';bd.classList.add('show');}else bd.classList.remove('show');
  METERS.forEach(x=>setMeter(x,m[x[2]]));
  BUTTONS.forEach(b=>{const e=$('b_'+b[0]);if(!e)return;const lit=b[3]?!!b[3](m):false;
@@ -1775,6 +1777,65 @@ applySkin();poll();
 '''
 
 
+def parse_excluded_ranges(text):
+    """[(first, last), ...] from the output of 'netsh int ipv4 show excludedportrange'"""
+    r = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*(\d+)\s+(\d+)\s*\*?\s*$", line)
+        if m:
+            r.append((int(m.group(1)), int(m.group(2))))
+    return r
+
+
+def reserved_ranges(proto="udp"):
+    """ports Windows keeps for itself (Hyper-V, WSL, Docker...). Empty on Mac/Linux or when unreadable."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(["netsh", "int", "ipv4", "show", "excludedportrange", "protocol=" + proto],
+                             capture_output=True, text=True, timeout=15).stdout
+    except Exception:
+        return []
+    return parse_excluded_ranges(out)
+
+
+def reserved_in(port, ranges):
+    return any(a <= port <= b for a, b in ranges)
+
+
+def thetis_button_ports():
+    """[(program, port)] Thetis sends its button text from, read (not changed) from the setup program"""
+    try:
+        import importlib
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        st = importlib.import_module("kpa1500_thetis_setup")
+        return [(n, p) for n, _f, p in st.button_ports()]
+    except Exception:
+        return []
+
+
+def port_problems(udp_ranges, tcp_ranges, mmio_port, mmio_listen, web_port, button_ports):
+    """plain-language list of reserved-port problems"""
+    out = []
+    for name, port in button_ports:
+        if reserved_in(port, udp_ranges):
+            out.append("Windows has reserved UDP port %d, which %s uses to send its button presses. The "
+                       "Thetis buttons will do nothing. Close %s and run Setup_Thetis_Containers.bat: it "
+                       "moves the buttons to a free port." % (port, name, name))
+    if mmio_port and reserved_in(mmio_port, udp_ranges):
+        out.append("Windows has reserved UDP port %d, where Thetis should listen for the bridge's readings. "
+                   "The Thetis meters will stay empty. See Help: 'Windows reserved ports'." % mmio_port)
+    if mmio_listen and reserved_in(mmio_listen, udp_ranges):
+        out.append("Windows has reserved UDP port %d, where the bridge listens for Thetis buttons. "
+                   "See Help: 'Windows reserved ports'." % mmio_listen)
+    if web_port and reserved_in(web_port, tcp_ranges):
+        out.append("Windows has reserved TCP port %d, the control panel port. Start the bridge with "
+                   "--web-port 8090 (or another free number)." % web_port)
+    return out
+
+
 class Bridge:
     def __init__(self, a, quiet=False):
         self.a = a
@@ -1827,6 +1888,7 @@ class Bridge:
         self.noant_low = False
         self.dummy_ok = set()         # bands where DUMMY OK was pressed
         self.noant_held = False       # amp put in STANDBY by the check
+        self.port_warn = ""           # Windows reserved-port problem text ("" = none)
         # over-drive protection: one limit in watts at the amplifier input (0 = off)
         dg = self.settings.get("drive_guard") if isinstance(self.settings.get("drive_guard"), dict) else {}
         self.dg_action = dg.get("action") if dg.get("action") in DG_ACTIONS else "warn"
@@ -3605,6 +3667,7 @@ class Bridge:
             "applet_skin": self.applet_skin,
             "noant": self.noant_state(), "noant_limits": dict(self.noant_limits),
             "drive_guard": self.drive_guard_state(),
+            "port_warn": self.port_warn,
             "noant_defaults": dict(NOANT_DEFAULTS),
             "tune_timeout": self.tune_timeout, "bridge_tune": self.bridge_tune,
             "thetis_buttons": self.thetis_buttons, "thetis_buttons_default": TB_DEFAULT,
@@ -3677,6 +3740,8 @@ class Bridge:
             "noant_text": na["text"],
             "drvlim": int(self.drive_guard_state()["warn"]),
             "drvlim_text": self.drive_guard_state()["text"],
+            "portwarn": int(bool(self.port_warn)),
+            "portwarn_text": self.port_warn,
             "knob_mode": KNOB_MODES[self.knob_mode][0] if (self.knob and self.knob.connected) else "--",
             "knob_connected": int(bool(self.knob and self.knob.connected)),
             "knob_now": KNOB_MODES[self.knob_mode][0],
@@ -3759,7 +3824,25 @@ class Bridge:
                 self.log("Thetis button %s -> %s%s" % (tok, "" if ok else "REFUSED: ", msg))
                 break
 
+    def check_reserved_ports(self):
+        """Windows only: warn when Windows has reserved a port we need (typical after Hyper-V/WSL/Docker)"""
+        try:
+            probs = port_problems(reserved_ranges("udp"), reserved_ranges("tcp"),
+                                  self.a.mmio_port, self.a.mmio_listen,
+                                  getattr(self.a, "web_port", 0) or 0, thetis_button_ports())
+        except Exception as e:
+            self.log("Reserved-port check failed: %s" % e)
+            return
+        self.port_warn = " ".join(probs)
+        if probs:
+            for t in probs:
+                self.log("WARNING: " + t)
+                if not self.quiet:
+                    print("\n*** WARNING: " + t + "\n")
+
     def start_mmio(self):
+        if os.name == "nt":
+            threading.Thread(target=self.check_reserved_ports, daemon=True).start()
         if self.mmio_targets():
             threading.Thread(target=self.mmio_send_loop, daemon=True).start()
         if self.a.mmio_listen:
@@ -3894,6 +3977,8 @@ class Bridge:
         dg = self.drive_guard_state()
         if dg["warn"]:
             s += " | " + dg["text"]
+        if self.port_warn:
+            s += " | PORT PROBLEM (see Help)"
         return s
 
     def run(self):
@@ -4042,6 +4127,8 @@ MMIO_VAR_HELP = {
     "noant_text": "the 'no antenna?' warning text (empty when all is well)",
     "drvlim": "1 when the over-drive protection is warning (drive setting or measured drive over the limit)",
     "drvlim_text": "the over-drive warning text (empty when all is well)",
+    "portwarn": "1 when Windows has reserved a port the bridge or Thetis needs (Thetis buttons or meters would not work)",
+    "portwarn_text": "the reserved-port warning text (empty when all is well)",
     "knob_mode": "what the FlexControl knob does now, e.g. VFO A tuning or AF volume (master) ('--' = no knob)",
     "knob_connected": "1 when the FlexControl tuning knob is connected",
     "knob_now": "what turning the knob does now, e.g. VFO A tuning, AF volume (master), AGC gain (RX1)",
@@ -4913,7 +5000,10 @@ SWR %tatg.amp_swr%   TMP %tatg.amp_temp% C   FLT %tatg.amp_fault_text%
                                          "The reason shows under Settings."],
             ["Thetis Variables list is empty", "Bridge not started with `--mmio-port 50100`, the In entry is not "
                                                "Active/Enabled, or port/format differ. Try `--mmio-test --mmio-port 50100`."],
-            ["A Thetis button does nothing", "Check the Out entry is Active/Enabled with 127.0.0.1:50101, the "
+            ["A Thetis button does nothing", "First look at the top of the control panel (and the bridge window): "
+                                             "a yellow PORT message means Windows has reserved the port Thetis uses "
+                                             "for the buttons - see 'Windows reserved ports' below. Otherwise check "
+                                             "the Out entry is Active/Enabled with 127.0.0.1:50101, the "
                                              "bridge has `--mmio-listen 50101`, and the text is a valid string. "
                                              "Use `--verbose` to see what arrives."],
             ["Command 'REFUSED - transmitting'", "By design. ATU, antenna and power-off changes are blocked while RF is present."],
@@ -4938,6 +5028,23 @@ SWR %tatg.amp_swr%   TMP %tatg.amp_temp% C   FLT %tatg.amp_fault_text%
             ["FAN tile shows a dash", "The fan setting has not been read yet, or the amplifier firmware is older "
                                       "than 01.47. Check the AMP link is ok."],
         ]),
+    ]))
+    S.append(("ports", "Windows reserved ports (Thetis buttons do nothing)", [
+        _P("Windows (Hyper-V, WSL, Docker and similar) can keep whole blocks of port numbers for itself. If "
+           "Windows has reserved the port Thetis uses to send its button presses, Thetis cannot open it: "
+           "the meters still work but **the buttons do nothing**. Thetis may show *Listener Start Problem "
+           "... ip:port conflict*. The reserved blocks can change after a Windows update or restart."),
+        _P("**The bridge checks for this every time it starts.** If it finds the problem, a yellow message "
+           "appears in the bridge window, the control panel and the Applet, and a line goes into the log."),
+        _P("**To repair it:**"),
+        _OL("Close Thetis.",
+            "Double-click **Setup_Thetis_Containers.bat** and answer the questions. The setup program "
+            "sees the reserved port and moves the buttons to a free one (it tells you which).",
+            "Start the bridge, then Thetis. Press a button to test."),
+        _P("**To check by hand**, open Command Prompt and type:"),
+        _CODE("netsh int ipv4 show excludedportrange protocol=udp"),
+        _P("If the port Thetis uses for the buttons (new installs use 47102; older ones 50102) lies inside "
+           "any listed range, that is the cause. Ports below 49152 are not reserved this way."),
     ]))
     S.append(("safety", "17. Safety notes", [
         _UL("The bridge never keys the transmitter and never presses TUNE for you.",
@@ -5471,6 +5578,7 @@ input[type=range]{width:7rem}
 #antwarn.on{display:flex}#antwarn.tx{background:var(--bad);color:#fff;animation:blink 1s steps(2) infinite}
 #antwarn span{flex:1}#antwarn button{min-height:1.8rem;padding:.15rem .6rem;font-weight:700}
 #drvwarn{display:none;background:var(--warn);color:#000;font-weight:700;padding:.4rem .6rem;border-radius:.3rem;margin-bottom:.5rem}
+#portwarn{display:none;background:var(--warn);color:#000;font-weight:700;padding:.4rem .6rem;border-radius:.3rem;margin-bottom:.5rem}#portwarn.on{display:block}
 #drvwarn.on{display:block}#drvwarn.tx{background:var(--bad);color:#fff;animation:blink 1s steps(2) infinite}
 @keyframes blink{50%{opacity:.55}}
 @media (prefers-reduced-motion:reduce){#antwarn.tx,#drvwarn.tx{animation:none}}
@@ -5506,6 +5614,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
 <div id="ampdown"></div>
 <div id="antwarn" role="alert"><span id="antwarn_t"></span> <button id="antwarn_b" type="button">DUMMY OK</button></div>
 <div id="drvwarn" role="alert"><span id="drvwarn_t"></span></div>
+<div id="portwarn" role="alert"><span id="portwarn_t"></span></div>
 <div id="drawer">
  <div class="dh">Layout</div>
  <div class="drow">
@@ -6102,6 +6211,7 @@ function update(s){
    ?'!! TRANSMITTING - NO ANTENNA? The receive level was '+na.dbm.toFixed(0)+' dBm on '+na.band+' m. Check the antenna / dummy load !!'
    :'NO ANTENNA? Receive level '+na.dbm.toFixed(0)+' dBm on '+na.band+' m is below the limit '+na.limit+' dBm.'
     +(na.hold?' The amp is held in STANDBY.':'')+' Check the antenna - press DUMMY OK if a dummy load is connected.';}
+ {const pw=$('portwarn');pw.classList.toggle('on',!!s.port_warn);if(s.port_warn)$('portwarn_t').textContent=s.port_warn;}
  {const dg=s.drive_guard||{},w=$('drvwarn');
   w.classList.toggle('on',!!dg.warn);w.classList.toggle('tx',dg.state==='tx');
   if(dg.warn)$('drvwarn_t').textContent=dg.state==='tx'
@@ -7899,6 +8009,27 @@ def selftest():
             os.remove(os.path.join(tdir, fn))
         except OSError:
             pass
+
+    rng = parse_excluded_ranges("Protocol udp Port Exclusion Ranges\n\nStart Port    End Port\n"
+                                "----------    --------\n      1980        2079\n     50102       50201\n"
+                                "     50202       50301     *\n\n* - Administered port exclusions.\n")
+    check("reserved port ranges are read from the netsh text (incl. the * lines)",
+          rng == [(1980, 2079), (50102, 50201), (50202, 50301)])
+    check("reserved port test: inside, edges and outside",
+          reserved_in(50102, rng) and reserved_in(50301, rng) and not reserved_in(47102, rng)
+          and not reserved_in(50101, rng))
+    pr = port_problems(rng, [], 50100, 50101, 8080, [("Thetis", 50102), ("Thetis HL2", 47102)])
+    check("a reserved button port gives one plain warning naming the program and the fix",
+          len(pr) == 1 and "50102" in pr[0] and "Setup_Thetis_Containers" in pr[0])
+    check("no warning when nothing is reserved", port_problems([], [], 50100, 50101, 8080, [("Thetis", 50102)]) == [])
+    check("the bridge's own reserved ports are reported",
+          len(port_problems([(50100, 50101)], [(8080, 8080)], 50100, 50101, 8080, [])) == 3)
+    bridge.port_warn = "TEST PORT PROBLEM"
+    check("the port warning reaches the status text, the panel data and the Thetis variables",
+          "PORT PROBLEM" in bridge.status_text() and bridge.mmio_vars()["portwarn"] == 1
+          and bridge.mmio_vars()["portwarn_text"] == "TEST PORT PROBLEM")
+    bridge.port_warn = ""
+    check("the port warning is cleared when the problem is gone", bridge.mmio_vars()["portwarn"] == 0)
 
     bridge.stop.set()
     bridge.lp.stop.set()

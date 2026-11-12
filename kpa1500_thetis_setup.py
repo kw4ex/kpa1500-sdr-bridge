@@ -49,7 +49,7 @@ import sys
 import uuid
 
 SETUP_VERSION = "2.0"
-IN_PORT, OUT_PORT, OUT_LISTEN = 50100, 50101, 50102
+IN_PORT, OUT_PORT, OUT_LISTEN = 50100, 50101, 47102   # 47102: below 49152, where Windows does not reserve ports
 CTRL_NAME, TELE_NAME = "KPA1500 Controls - KW4EX", "KPA1500 Telemetry - KW4EX"
 KNOB_NAME = "KPA1500 Knob - KW4EX"
 
@@ -1283,6 +1283,68 @@ def mmio_entries(root):
     return out
 
 
+# ---- ports that Windows keeps for itself (Hyper-V, WSL, Docker ...) -------------------------
+def reserved_udp_ranges():
+    """[(first, last), ...] from 'netsh int ipv4 show excludedportrange protocol=udp' (Windows only)"""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(["netsh", "int", "ipv4", "show", "excludedportrange", "protocol=udp"],
+                             capture_output=True, text=True, timeout=15).stdout
+    except Exception:
+        return []
+    return parse_excluded_ranges(out)
+
+
+def parse_excluded_ranges(text):
+    r = []
+    for line in (text or "").splitlines():
+        m = re.match(r"^\s*(\d+)\s+(\d+)\s*\*?\s*$", line)
+        if m:
+            r.append((int(m.group(1)), int(m.group(2))))
+    return r
+
+
+def port_reserved(port, ranges):
+    return any(a <= port <= b for a, b in ranges)
+
+
+def free_button_port(used_ports, ranges, start=None):
+    """first port from 47102 up, below 49152, not used by another Multi Meter I/O entry or reserved"""
+    port = OUT_LISTEN if start is None else start
+    while port < 49152 and (port in used_ports or port_reserved(port, ranges)):
+        port += 1
+    if port >= 49152:
+        raise RuntimeError("no free port found for the Thetis buttons")
+    return port
+
+
+def button_ports(appdata=None):
+    """[(program name, four-char name, port Thetis sends its button text from)] for every program
+    on this computer that has a KPA button entry (read only, nothing is changed)"""
+    res = []
+    for key in PROG_ORDER:
+        try:
+            path = program_db(key, appdata)
+            if not path:
+                continue
+            db = ThetisDB(path)
+            if not db.has("multimeter_io2"):
+                continue
+            v = db.val("multimeter_io2")
+            if mmio_is_json(v):
+                ents = json_mmio_entries(json_blob_decode(v)[1])
+            else:
+                ents = mmio_entries(blob_decode(v))
+            for e in ents:
+                if e["type"] == 0 and e["dir"] in (1, 2) and e["ep_port"] == OUT_PORT:
+                    res.append((PROGRAMS[key]["name"], e["four"], e["port"]))
+                    break
+        except Exception:
+            continue
+    return res
+
+
 def new_mmio(template_root, which, guid, four, used_ports):
     """copy a template entry and set it up"""
     tpl = [e for e in mmio_entries(template_root) if e["four"] == {"in": "tatg", "out": "hKCC"}[which]][0]
@@ -1302,9 +1364,7 @@ def new_mmio(template_root, which, guid, four, used_ports):
         set_enum(m.get("_type"), 0)          # UDP listener
         set_enum(m.get("_terminator_in"), 0)
     else:
-        port = OUT_LISTEN
-        while port in used_ports:
-            port += 1
+        port = free_button_port(used_ports, reserved_udp_ranges())
         m.set("_port", P(8, port))
         set_enum(m.get("_direction"), 2)     # BOTH (sends to the bridge)
         set_enum(m.get("_format_out"), 2)    # RAW
@@ -1368,9 +1428,7 @@ def json_new_mmio(d, which, guid, four, used_ports):
     if which == "in":
         m.update(Port=IN_PORT, Direction=0, FormatIn=1, TerminatorIn=0)
     else:
-        port = OUT_LISTEN
-        while port in used_ports:
-            port += 1
+        port = free_button_port(used_ports, reserved_udp_ranges())
         m.update(Port=port, Direction=2, FormatIn=0, FormatOut=2, TerminatorOut=0,
                  UdpEndpointIP="127.0.0.1", UdpEndpointPort=OUT_PORT)
     d[guid] = m
@@ -1929,6 +1987,12 @@ def run_one(a, here):
         if e["fout"] != 2:
             plan.append("fix_out_format")
         out4 = e["four"]
+        rsv = reserved_udp_ranges()
+        if port_reserved(e["port"], rsv):
+            newp = free_button_port(used_ports | {IN_PORT}, rsv)
+            say("  PROBLEM     : Windows has reserved UDP port %d, so %s cannot use it and the" % (e["port"], pname()))
+            say("                KPA buttons would do nothing. Port %d will be used instead." % newp)
+            plan.append("fix_out_port:%d" % newp)
     else:
         out4 = "KPAb" if "KPAb" not in used4 else fourchar("127.0.0.1", OUT_PORT, uuid.uuid4())
         say("  buttons OUT : none sending to port %d - will add '%s' (UDP, sends to 127.0.0.1:%d, Raw)" % (OUT_PORT, out4, OUT_PORT))
@@ -2026,6 +2090,10 @@ def run_one(a, here):
                 e["node"]["FormatIn"] = 1
             if e["four"] == out4 and "fix_out_format" in plan:
                 e["node"]["FormatOut"] = 2
+            if e["four"] == out4 and e["ep_port"] == OUT_PORT:
+                for pl in plan:
+                    if pl.startswith("fix_out_port:"):
+                        e["node"]["Port"] = int(pl.split(":")[1])
             if ("enable:" + e["four"]) in plan:
                 e["node"]["Enabled"] = True
                 e["node"]["Active"] = True
@@ -2043,6 +2111,10 @@ def run_one(a, here):
             set_enum(e["node"].get("_format_in"), 1)
         if e["four"] == out4 and "fix_out_format" in plan:
             set_enum(e["node"].get("_format_out"), 2)
+        if e["four"] == out4 and e["ep_port"] == OUT_PORT:
+            for pl in plan:
+                if pl.startswith("fix_out_port:"):
+                    e["node"].set("_port", P(8, int(pl.split(":")[1])))
         if ("enable:" + e["four"]) in plan:
             e["node"].set("_enabled", P(1, True))
             e["node"].set("_listener_active", P(1, True))
@@ -2088,6 +2160,9 @@ def run_one(a, here):
     say("")
     say("Done. What was set up:")
     say("  Multi Meter I/O: readings IN '%s' (port %d), buttons OUT '%s' (to port %d)" % (in4, IN_PORT, out4, OUT_PORT))
+    for pl in plan:
+        if pl.startswith("fix_out_port:"):
+            say("  Button port moved to %s (Windows had reserved the old one)." % pl.split(":")[1])
     say("  Containers: %s, %s%s" % (TELE_NAME, CTRL_NAME, (", " + KNOB_NAME) if knob else ""))
     say("")
     say("If anything looks wrong: Undo_Thetis_Containers.bat puts the backup back.")
