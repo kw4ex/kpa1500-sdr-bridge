@@ -753,6 +753,7 @@ class Builder:
         self.lib, self.in_guid, self.T = thetis_lib, in_guid, in4
         self.json_out = json_out
         self.dropped = set()
+        self.natives = {}
 
     def _out(self, s, name):
         if not self.json_out:
@@ -1471,6 +1472,35 @@ def containers_named(db, name):
     return out
 
 
+def collect_natives(db):
+    """Thetis' own bar items found in this database: {type: (settings blob, item height)}. Items that sit in one of
+    our own windows are used only when no other copy exists."""
+    ours, found, fallback = set(), {}, {}
+    for k in db.keys():
+        if k.startswith("meterContData_"):
+            f = db.val(k).split("|")
+            if len(f) > 15 and f[15].split("\n")[0].strip().startswith("KPA1500"):
+                ours.add(k[len("meterContData_"):])
+    for k in db.keys():
+        if not k.startswith("meterIGData_"):
+            continue
+        f = db.val(k).split("|")
+        if len(f) < 8 or f[7] not in NATIVE_TYPES:
+            continue
+        try:
+            sk = "meterIGSettings_2_" + f[0]
+            blob = db.val(sk) if db.has(sk) else None
+            h = float(f[6])
+        except (ValueError, KeyError):
+            continue
+        if not blob:
+            continue
+        (fallback if f[1] in ours else found).setdefault(f[7], (blob, h))
+    for t, v in fallback.items():
+        found.setdefault(t, v)
+    return found
+
+
 def items_of(db, cid):
     return [db.val(k).split("|") for k in db.keys()
             if k.startswith("meterIGData_") and db.val(k).split("|")[1] == cid]
@@ -1491,7 +1521,7 @@ def fit_height(width, items, pad=3):
     for it in items:
         if len(it) > 4 and it[4] is not None:
             continue
-        total += it[3] if len(it) > 3 and it[3] is not None else GEO_H[it[0]]
+        total += it[3] if len(it) > 3 and it[3] is not None else GEO_H.get(it[0], 0.0910)
     return int(round(width * total)) + pad
 
 
@@ -1517,7 +1547,7 @@ def container_rows(cid, notes, width, height, items, x=100, y=100, nfields=23):
         seq.append((it, False))
     for order, (item, trick) in enumerate(seq):
         mt, setting, igid = item[:3]
-        x, h = geo[mt]
+        x, h = geo.get(mt, (0.004, 0.0910))
         if len(item) > 3 and item[3] is not None:
             h = item[3]          # explicit height (button box: 0.12 per row of buttons)
         if trick:
@@ -1531,11 +1561,12 @@ def container_rows(cid, notes, width, height, items, x=100, y=100, nfields=23):
 
 DEFAULT_BUTTONS = ["opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key",
                    "fault", "lpalarm", "lpmode", "fandn", "fanup"]
-BUTTON_IDS = set(DEFAULT_BUTTONS) | {"gap", "title"}
+BUTTON_IDS = set(DEFAULT_BUTTONS) | {"gap", "title", "open_help", "open_panel", "open_applet"}
 
 
 TM_DEFAULT = ["status", "freq", "fwd", "swr", "drive", "refl", "pa", "fault", "lpp", "lps", "lptext"]
-TM_IDS = set(TM_DEFAULT) | {"title", "gap"}
+NATIVE_TYPES = ["SIGNAL_STRENGTH", "MIC", "ALC", "COMP", "LEVELER", "LEVELER_GAIN", "CFC", "EQ", "PWR", "SWR", "REVERSE_PWR"]
+TM_IDS = set(TM_DEFAULT) | {"title", "gap"} | {"th_" + t for t in NATIVE_TYPES}
 TITLE_TELE = "KPA1500 {ver} Telemetry"
 TITLE_CTRL = "KPA1500 {ver} Controls"
 
@@ -1715,6 +1746,8 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, met
                                                   % (T, T, T, T), GREEN), ig()),
         "gap": lambda: ("TEXT_OVERLAY", txt(" ", WHITE), ig()),
     }
+    for _t, (_blob, _h) in b.natives.items():          # Thetis' own bars, copied from this database
+        TEL["th_" + _t] = (lambda t=_t, bl=_blob, h=_h: (t, bl, ig(), h))
     TEXT_IDS = {"title", "status", "freq", "refl", "pa", "fault", "lptext", "gap"}
     tele_ids = [x for x in tm_order if x in TEL and not (x.startswith("lp") and not lp100)]
     tele, alive_t = [], ig()
@@ -1858,6 +1891,12 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, met
                 else:
                     citems.append(("TEXT_OVERLAY", txt("%%%s.%s_text%%" % (T, arg), GREEN, 12.0, True), ig()))
                 rest()
+            for rid in ids:                       # readings: amplifier lines and bars, and Thetis' own bars
+                key = rid[3:] if rid.startswith("tm_") else (rid if rid.startswith("th_") else "")
+                if key and key in TEL and key not in ("title", "gap") and not (key.startswith("lp") and not lp100):
+                    citems.append(TEL[key]())
+                    if key in TEXT_IDS:
+                        rest()
             if spec:
                 crow = max(1, (len(spec) + cols - 1) // cols)
                 citems.append(("OTHER_BUTTONS", b.buttons(spec, cols, out4, cd.get("style", "legacy")), ig(),
@@ -2312,6 +2351,7 @@ def run_one(a, here):
 
     # containers (keep the old ids so windows stay where they were)
     b = Builder(lib, in_guid, in4, json_out=jflav)
+    b.natives = collect_natives(db)
     cust = read_custom_containers(spath)
     tele, ctrl, knob, mwin, cwins = build_containers(b, out4, lp100, layout, meters,
                                                      (kw_order, kw_title) if kw_on else None, meterswin=True, custom=cust)
@@ -2379,6 +2419,13 @@ def run_one(a, here):
                                     (", " + METERS_NAME) if mw_on else ""))
     for cd, _i in cwins:
         say("  Your container: %s" % (CUSTOM_PREFIX + cd["name"] + " - KW4EX"))
+    wanted = set((meters[0] if meters else [])) | {i for cd, _i in cwins for i in cd["items"]}
+    wanted = {x[3:] for x in wanted if isinstance(x, str) and x.startswith("th_")}
+    miss = sorted(wanted - set(b.natives))
+    if miss:
+        say("  Not found in your Thetis, so left out: %s (add that meter to a Thetis container once, then run Setup again)." % ", ".join(miss))
+    elif wanted:
+        say("  Thetis readings copied from your Thetis: %s." % ", ".join(sorted(wanted)))
     gone = len(old_custom) - len([c for c in cust_ids if c in old_custom])
     if gone:
         say("  %d of your containers that are no longer in the bridge settings were removed." % gone)

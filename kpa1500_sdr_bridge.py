@@ -29,8 +29,14 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
-  2.49 (in test)     YOUR OWN BUTTONS: three new Thetis/panel buttons that open the Help, the Settings page and the
-                     Applet. Up to 8 'Programs' (a label, a program and optional arguments) that a button starts;
+  2.49 (in test)     SETTINGS MENU REORGANISED: Controls window, Telemetry window, Knob window and Build a custom
+                     container each have their own section. Programs and Numbers are inside the Controls window.
+                     Telemetry: 'Add a Thetis reading' adds one of Thetis's own bars (S-meter, Mic level, ALC,
+                     Compressor, Leveler, CFC, Equaliser ...), copied by Setup from your Thetis. Custom containers can
+                     hold amplifier readings and those Thetis bars too.
+                     YOUR OWN BUTTONS: three new Thetis/panel buttons that open the Help, the Settings page and the
+                     Applet. They are in the list of Controls window buttons (Settings > Thetis windows, 'Not shown'
+                     list) as well as in custom containers. Up to 8 'Programs' (a label, a program and optional arguments) that a button starts;
                      a button carries only the slot number, so it can never start anything you did not put there,
                      and the slots can only be edited on the bridge computer. Up to 6 'Numbers' (e.g. a maximum safe
                      drive) with - / + buttons and up to 4 preset buttons; a number can drive the over-drive limit or
@@ -228,7 +234,8 @@ NOANT_LEARN_MARGIN = 6    # learn: limit = level measured with no antenna + this
 # Thetis Controls window buttons (ids shared with kpa1500_thetis_setup.py)
 TB_DEFAULT = ["title", "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key",
               "fault", "lpalarm", "lpmode", "fandn", "fanup"]
-TB_IDS = set(TB_DEFAULT) | {"gap"}
+TB_OPEN = ["open_help", "open_panel", "open_applet"]      # optional extra buttons (not in the standard layout)
+TB_IDS = set(TB_DEFAULT) | {"gap"} | set(TB_OPEN)
 
 
 # Your own programs, numbers and containers (ids shared with kpa1500_thetis_setup.py)
@@ -243,7 +250,7 @@ NUM_LINKS = ("", "dg_limit", "tune_timeout")      # a stored number, the over-dr
 
 
 def custom_item_ids():
-    ids = set(CUSTOM_BUTTONS) | {"gap", "title"}
+    ids = set(CUSTOM_BUTTONS) | {"gap", "title"} | {"tm_" + x for x in TM_DEFAULT} | set(TM_NATIVE_IDS)
     for i in range(1, USER_PROGRAMS_MAX + 1):
         ids.add("prog%d" % i)
     for i in range(1, USER_NUMBERS_MAX + 1):
@@ -332,7 +339,13 @@ def num_text(n, cur):
 
 # Thetis Telemetry window items (ids shared with kpa1500_thetis_setup.py)
 TM_DEFAULT = ["status", "freq", "fwd", "swr", "drive", "refl", "pa", "fault", "lpp", "lps", "lptext"]
-TM_IDS = set(TM_DEFAULT) | {"title", "gap"}
+# Thetis' own bar readings, copied from your Thetis database by Setup (id = "th_" + the Thetis item type)
+TM_NATIVE = [("SIGNAL_STRENGTH", "S-meter (signal strength)"), ("MIC", "Mic level"), ("ALC", "ALC"),
+             ("COMP", "Compressor"), ("LEVELER", "Leveler"), ("LEVELER_GAIN", "Leveler gain"), ("CFC", "CFC"),
+             ("EQ", "Equaliser"), ("PWR", "Forward power (Thetis)"), ("SWR", "SWR (Thetis)"),
+             ("REVERSE_PWR", "Reverse power (Thetis)")]
+TM_NATIVE_IDS = ["th_" + t for t, _n in TM_NATIVE]
+TM_IDS = set(TM_DEFAULT) | {"title", "gap"} | set(TM_NATIVE_IDS)
 TITLE_TELE = "KPA1500 {ver} Telemetry"
 TITLE_CTRL = "KPA1500 {ver} Controls"
 
@@ -6279,14 +6292,8 @@ background:color-mix(in srgb,var(--bg) 70%,var(--card))}
   <button id="d_nadef">Default limits</button>
   <span class="small">Limit per band in dBm: a lower receive level shows the warning. Empty = no check on that band. Learn sets the limit to the level measured with NO antenna + 6 dB.</span>
  </div>
- <div class="dh">Thetis windows <span class="small">(KPA1500 Telemetry, Controls and Knob, inside Thetis, Thetis HL2 or SDR-VST3. NereusSDR does not use these: use the Applet window.)</span></div>
- <div class="small">Choose what each Thetis window shows and in which order. The Thetis look here shows it at once. Arrows move an item, x takes it out, + puts it back. In a title, <b>{ver}</b> shows the bridge version.</div>
- <div class="dsub">Telemetry window</div>
- <div class="drow"><label>Title <input type="text" id="d_tmtitle" size="32" maxlength="48" autocomplete="off"></label><span class="small">(shown when the "Title line" item is in the list)</span></div>
- <div id="d_tm" class="tblist" aria-label="Telemetry window order"></div>
- <div class="drow" id="d_tmhid"></div>
- <div class="drow"><button id="d_tmgap">Add blank line</button><button id="d_tmdef">Standard order</button></div>
- <div class="dsub">Controls window</div>
+ <div class="dh">Controls window <span class="small">(the buttons window in Thetis, Thetis HL2 or SDR-VST3. NereusSDR does not use the Thetis windows: use the Applet window.)</span></div>
+ <div class="small">Choose which buttons the window has and in which order. The Thetis look here shows it at once. Arrows move an item, x takes it out, + puts it back. <b>HELP</b>, <b>SETTINGS</b> and <b>APPLET</b> are in the Not shown list. Your own programs and numbers are set up below; add their buttons in a custom container.</div>
  <div class="drow"><label>Title <input type="text" id="d_tbtitle" size="32" maxlength="48" autocomplete="off"></label></div>
  <div id="d_tb" class="tblist" aria-label="Button order"></div>
  <div class="drow" id="d_tbhid"></div>
@@ -6295,19 +6302,40 @@ background:color-mix(in srgb,var(--bg) 70%,var(--card))}
   <label title="Standard: black buttons that turn blue when on (the look the windows always had). Legacy: near-black rounded buttons with a thin grey border, as in the Container Manager. Press Rebuild Thetis windows to put it into Thetis.">Button style <select id="d_tbstyle"><option value="default">Standard</option><option value="legacy">Legacy</option></select></label>
   <button id="d_tbgap">Add blank space</button><button id="d_tbdef">Standard order</button>
  </div>
+ <div class="dsub">Your programs <span class="small">(start your own programs from a button)</span></div>
+ <div class="small">Fill a slot with a label (it is the button text), the program to start and, if it needs them, arguments. Use a slot as a button by adding it to a container in <b>Custom containers</b>. A button can only start the program in its slot: nothing can start another program. These slots can only be changed on the bridge computer itself.</div>
+ <div id="u_prog"></div>
+ <div class="drow" id="u_prog_row"><span id="u_prog_msg" class="small"></span></div>
+ <div class="dsub">Your numbers <span class="small">(settings you change with - and + buttons or presets, for example a maximum safe drive)</span></div>
+ <div class="small">Give a number a name to switch it on. <b>Over-drive limit</b> and <b>TUNE auto-stop</b> change those real bridge settings; <b>stored number</b> just stores a value you can show in Thetis (variable <b>num1</b> to <b>num6</b>). Presets are buttons that jump straight to a value.</div>
+ <div id="u_num"></div>
+ <div class="drow" id="u_num_row"><span id="u_num_msg" class="small"></span></div>
+ <div class="drow">
+  <button id="d_tbbuild" class="act" title="Opens the setup on the bridge computer">Rebuild Thetis windows</button>
+  <span class="small">Puts the windows into Thetis as shown here. The setup window opens on the bridge computer, offers to close Thetis (the normal way - it saves its settings), makes a backup, rebuilds both windows in the same place and offers to start Thetis again.</span>
+ </div>
+ <div class="dh">Telemetry window <span class="small">(the readings window in Thetis)</span></div>
+ <div class="small">The standard readings are listed. Use <b>Add a Thetis reading</b> to add one of Thetis's own bars (for example Mic level); Setup copies it from your Thetis. Arrows move an item, x takes it out.</div>
+ <div class="drow"><label>Title <input type="text" id="d_tmtitle" size="32" maxlength="48" autocomplete="off"></label><span class="small">(shown when the "Title line" item is in the list)</span></div>
+ <div id="d_tm" class="tblist" aria-label="Telemetry window order"></div>
+ <div class="drow" id="d_tmhid"></div>
+ <div class="drow"><button id="d_tmgap">Add blank line</button><button id="d_tmdef">Standard order</button></div>
+ <div class="drow"><label>Add a Thetis reading <select id="d_tmadd"></select></label></div>
  <div class="dsub">Meters window <span class="small">(small window with just the forward power and SWR bars)</span></div>
  <div class="drow"><label><input type="checkbox" id="d_mwon"> Show the KPA1500 Meters window in Thetis</label></div>
- <div class="dsub">Knob window <span class="small">(what the FlexControl knob and buttons do right now)</span></div>
+ <div class="drow" id="u_tm_row"></div>
+ <div class="dh">Knob window <span class="small">(what the FlexControl knob and buttons do right now)</span></div>
  <div class="drow"><label><input type="checkbox" id="d_kwon"> Show the KPA1500 Knob window in Thetis</label>
   <label>Title <input type="text" id="d_kwtitle" size="32" maxlength="48" autocomplete="off"></label></div>
  <div id="d_kw" class="tblist" aria-label="Knob window order"></div>
  <div class="drow" id="d_kwhid"></div>
  <div class="drow"><button id="d_kwgap">Add blank line</button><button id="d_kwdef">Standard order</button>
   <span class="small">In the window, '&gt;AF' means the press switches the knob to AF volume; 2x = double tap, hold = long press.</span></div>
- <div class="drow">
-  <button id="d_tbbuild" class="act" title="Opens the setup on the bridge computer">Rebuild Thetis windows</button>
-  <span class="small">Puts both windows into Thetis as shown here. The setup window opens on the bridge computer, offers to close Thetis (the normal way - it saves its settings), makes a backup, rebuilds both windows in the same place and offers to start Thetis again.</span>
- </div>
+ <div class="drow" id="u_kw_row"></div>
+ <div class="dh">Build a custom container <span class="small">(your own Thetis windows with any items you choose)</span></div>
+ <div class="small">Make as many as you like (up to 8). Each one becomes its own Thetis window and can hold buttons, number lines, your programs and telemetry readings (amplifier readings and Thetis bars such as Mic level). Save, then rebuild the Thetis windows. A container you delete here is removed from Thetis at the next rebuild.</div>
+ <div id="u_cust"></div>
+ <div class="drow" id="u_cust_row"><span id="u_cust_msg" class="small"></span></div>
  <div class="dh">Panel access</div>
  <div class="drow"><span id="d_pwstat" class="small"></span></div>
  <div class="drow">
@@ -6341,18 +6369,6 @@ background:color-mix(in srgb,var(--bg) 70%,var(--card))}
   <button id="d_lpconnect">Connect</button><button id="d_lpdisc">Disconnect</button><button id="d_lpscan">Scan ports</button>
   <span id="d_lpstat" class="small"></span>
  </div>
- <div class="dh">Programs <span class="small">(start your own programs from a Thetis or panel button)</span></div>
- <div class="small">Fill a slot with a label (it is the button text), the program to start and, if it needs them, arguments. Use a slot as a button by adding it to a container in <b>Custom containers</b>. A button can only start the program in its slot: nothing can start another program. These slots can only be changed on the bridge computer itself.</div>
- <div id="u_prog"></div>
- <div class="drow" id="u_prog_row"><span id="u_prog_msg" class="small"></span></div>
- <div class="dh">Numbers <span class="small">(settings you can change with - and + buttons or presets, for example a maximum safe drive)</span></div>
- <div class="small">Give a number a name to switch it on. <b>Over-drive limit</b> and <b>TUNE auto-stop</b> change those real bridge settings; <b>stored number</b> just stores a value you can show in Thetis (variable <b>num1</b> to <b>num6</b>). Presets are buttons that jump straight to a value.</div>
- <div id="u_num"></div>
- <div class="drow" id="u_num_row"><span id="u_num_msg" class="small"></span></div>
- <div class="dh">Custom containers <span class="small">(your own Thetis windows with the buttons and numbers you choose)</span></div>
- <div class="small">Make as many as you like (up to 8). Each one becomes its own Thetis window. Save, then rebuild the Thetis windows. A container you delete here is removed from Thetis at the next rebuild.</div>
- <div id="u_cust"></div>
- <div class="drow" id="u_cust_row"><span id="u_cust_msg" class="small"></span></div>
  <div class="drow" style="margin-top:.6rem">
   <button id="d_done" class="act">Done</button>
   <span class="small"><span id="ver2"></span> <a href="/help" target="_blank" rel="noopener">Open the full help</a>. Bridge settings are saved by the bridge (kpa1500_settings.json); layouts are saved in this browser.</span>
@@ -6627,6 +6643,9 @@ const TBTN={   // id: [lit label, dark label, lit?, action when lit, action when
  lpmode:['LP MODE','LP MODE',null,'lp_mode','lp_mode','lp','LP-100A mode','LP MODE'],
  fandn:['FAN -','FAN -',null,'fan_down','fan_down','','Lower the minimum fan speed','FAN -'],
  fanup:['FAN +','FAN +',null,'fan_up','fan_up','','Raise the minimum fan speed','FAN +'],
+ open_help:['HELP','HELP',null,'open_help','open_help','','Opens the bridge Help in your browser','HELP (opens the help)'],
+ open_panel:['SETTINGS','SETTINGS',null,'open_panel','open_panel','','Opens the bridge panel and its Settings page','SETTINGS (opens the panel)'],
+ open_applet:['APPLET','APPLET',null,'applet_window','applet_window','','Opens the Applet window','APPLET (opens the Applet)'],
  gap:['','',null,null,null,'','','(blank space)']};
 const TB_STD=['title','opr','atu','ant','amp','tune','atutune','sot','dummy','key','fault','lpalarm','lpmode','fandn','fanup'];
 const TH={};
@@ -6664,7 +6683,12 @@ const TMITEM={   // id: [list name, colour, bold, needs]
  swr:['SWR bar','',false,''],drive:['Drive bar','',false,''],refl:['Refl / gain / drive-from line','#fff',false,''],
  pa:['PA temp / volts / amps / fan line','#fff',false,''],fault:['Fault / Stby-on-Tune line','#ffa500',false,''],
  lpp:['LP-100A power bar','',false,'lp'],lps:['LP-100A SWR bar','',false,'lp'],
- lptext:['LP-100A R / X / |Z| / RL line','#00ff00',false,'lp'],gap:['(blank line)','#fff',false,'']};
+ lptext:['LP-100A R / X / |Z| / RL line','#00ff00',false,'lp'],gap:['(blank line)','#fff',false,''],
+ th_SIGNAL_STRENGTH:['Thetis S-meter bar','#8fa3ad',false,''],th_MIC:['Thetis Mic level bar','#8fa3ad',false,''],th_ALC:['Thetis ALC bar','#8fa3ad',false,''],
+ th_COMP:['Thetis Compressor bar','#8fa3ad',false,''],th_LEVELER:['Thetis Leveler bar','#8fa3ad',false,''],th_LEVELER_GAIN:['Thetis Leveler gain bar','#8fa3ad',false,''],
+ th_CFC:['Thetis CFC bar','#8fa3ad',false,''],th_EQ:['Thetis Equaliser bar','#8fa3ad',false,''],th_PWR:['Thetis Forward power bar','#8fa3ad',false,''],
+ th_SWR:['Thetis SWR bar','#8fa3ad',false,''],th_REVERSE_PWR:['Thetis Reverse power bar','#8fa3ad',false,'']};
+const TH_IDS=Object.keys(TMITEM).filter(k=>k.indexOf('th_')===0);
 const TM_STD=['status','freq','fwd','swr','drive','refl','pa','fault','lpp','lps','lptext'];
 const TMBAR={fwd:0,swr:1,drive:2,lpp:3,lps:4};
 function buildTele(tm,lp){
@@ -6672,7 +6696,7 @@ function buildTele(tm,lp){
  const box=TH.tbody;while(box.firstChild)box.removeChild(box.firstChild);TH.tel={};
  tm.order.forEach((id,i)=>{const d=TMITEM[id];if(!d||(d[3]==='lp'&&!lp))return;
   if(id in TMBAR){box.appendChild(tbar(TBARS[TMBAR[id]]));return;}
-  const el=TH.line(box,d[1],d[2]);if(id==='gap')el.innerHTML='&nbsp;';TH.tel[id]=el;});
+  const el=TH.line(box,d[1],d[2]);if(id==='gap')el.innerHTML='&nbsp;';if(id.indexOf('th_')===0)el.textContent='['+d[0]+']';TH.tel[id]=el;});
 }
 const verTitle=(t,m)=>String(t||'').split('{ver}').join(m.bridge_version||'');
 const KWITEM={title:['Title line','#ffff80',true],now:['Knob mode now (what turning does)','#00ff00',true],
@@ -7012,11 +7036,11 @@ $('d_pwdel').addEventListener('click',()=>{if(confirm('Remove the panel password
 function tbSmall(txt,label,fn){const b=document.createElement('button');b.type='button';b.textContent=txt;
  b.setAttribute('aria-label',label);b.title=label;b.addEventListener('click',fn);return b;}
 const EDIT={
- tb:{key:'',state:'thetis_buttons',std:TB_STD,act:'thetis_buttons',name:id=>TBTN[id]&&TBTN[id][7],needs:id=>TBTN[id]&&TBTN[id][5],
+ tb:{key:'',state:'thetis_buttons',std:TB_STD.concat(['open_help','open_panel','open_applet']),act:'thetis_buttons',name:id=>TBTN[id]&&TBTN[id][7],needs:id=>TBTN[id]&&TBTN[id][5],
   tip:id=>TBTN[id]&&TBTN[id][6],box:'d_tb',hid:'d_tbhid',title:'d_tbtitle',defTitle:'KPA1500 {ver} Controls',cols:true},
  kw:{key:'',state:'thetis_knobwin',std:KW_STD,act:'thetis_knobwin',name:id=>KWITEM[id]&&KWITEM[id][0],needs:id=>'',
   tip:id=>'',box:'d_kw',hid:'d_kwhid',title:'d_kwtitle',defTitle:'FlexControl Knob {ver}',cols:false},
- tm:{key:'',state:'thetis_meters',std:TM_STD.concat(['title']),act:'thetis_meters',name:id=>TMITEM[id]&&TMITEM[id][0],needs:id=>TMITEM[id]&&TMITEM[id][3],
+ tm:{key:'',state:'thetis_meters',std:TM_STD.concat(['title']).concat(TH_IDS),act:'thetis_meters',name:id=>TMITEM[id]&&TMITEM[id][0],needs:id=>TMITEM[id]&&TMITEM[id][3],
   tip:id=>'',box:'d_tm',hid:'d_tmhid',title:'d_tmtitle',defTitle:'KPA1500 {ver} Telemetry',cols:false}};
 function edCur(E){const v=S&&S[E.state];return v?JSON.parse(JSON.stringify(v)):{order:E.std.filter(x=>x!=='title'),title:E.defTitle,columns:4};}
 function edSave(E,o){const p={order:o.order,title:o.title};if(E.cols)p.columns=o.columns;send(E.act,p);}
@@ -7181,6 +7205,7 @@ const Q=location.search;
 async function api(a,p){const r=await fetch('/api/cmd'+Q,{method:'POST',headers:{'Content-Type':'application/json','X-KPA':'1'},body:JSON.stringify({action:a,params:p||{}})});return r.json();}
 async function state(){const r=await fetch('/api/state'+Q,{cache:'no-store'});return r.json();}
 const BUILTIN=[['opr','OPERATE / STANDBY'],['atu','ATU IN / BYP'],['ant','ANT 1 / 2'],['amp','AMP ON / OFF'],['tune','TUNE (radio)'],['atutune','ATU TUNE'],['sot','SoT'],['key','KEY soft / hw'],['dummy','DUMMY OK'],['fault','FAULT clear'],['lpalarm','LP ALARM (LP)'],['lpmode','LP MODE (LP)'],['fandn','FAN -'],['fanup','FAN +']];
+const TMN={status:'Status line',freq:'AMP frequency + RX level line',fwd:'Forward power bar',swr:'SWR bar',drive:'Drive bar',refl:'Refl / gain / drive-from line',pa:'PA temp / volts / amps / fan line',fault:'Fault / Stby-on-Tune line',lpp:'LP-100A power bar',lps:'LP-100A SWR bar',lptext:'LP-100A R / X / Z / RL line'};
 const OPEN=[['open_help','HELP (opens the help)'],['open_panel','SETTINGS (opens this page)'],['open_applet','APPLET (opens the Applet)']];
 let ST=null;
 function say(id,t,ok){const e=$(id);if(e){e.textContent=t;e.style.color=ok===false?'var(--bad)':'var(--ok)';}}
@@ -7241,6 +7266,8 @@ async function saveNum(){
 function itemName(id){
  const b=BUILTIN.concat(OPEN).find(x=>x[0]===id);if(b)return b[1];
  if(id==='gap')return '(blank space)';if(id==='title')return 'Title line';
+ let t=id.match(/^tm_(\w+)$/);if(t&&TMN[t[1]])return 'Reading: '+TMN[t[1]];
+ t=id.match(/^th_(\w+)$/);if(t){const r=THR.find(x=>x[0]===t[1]);if(r)return 'Thetis bar: '+r[1];}
  let m=id.match(/^prog(\d)$/);if(m){const p=ST.user_programs[+m[1]-1];return 'Program '+m[1]+': '+(p?p.label:'');}
  m=id.match(/^num(\d)(?:_(dn|up|p(\d)))?$/);
  if(m){const n=ST.user_numbers[+m[1]-1]||{},l=n.label||('number '+m[1]);
@@ -7255,6 +7282,8 @@ function addChoices(sel){
  og('Your programs',ST.user_programs.map((p,i)=>['prog'+(i+1),(i+1)+': '+p.label+(p.path?'':' (empty)')]));
  const nums=[];ST.user_numbers.forEach((n,i)=>{if(!n.label)return;const k=i+1;nums.push(['num'+k,n.label+' - line with the value'],['num'+k+'_dn',n.label+' -  button'],['num'+k+'_up',n.label+' +  button']);(n.presets||[]).forEach((v,q)=>nums.push(['num'+k+'_p'+(q+1),n.label+' preset '+v+' button']));});
  if(nums.length)og('Your numbers',nums);
+ og('Telemetry readings (amplifier)',Object.keys(TMN).map(k=>['tm_'+k,TMN[k]]));
+ og('Thetis bars (copied from your Thetis)',THR.map(([t,n])=>['th_'+t,n]));
  og('Layout',[['title','Title line'],['gap','Blank space']]);
 }
 let CUST=[];
@@ -7283,7 +7312,7 @@ function drawCust(){
   card.append(list);
   const add=mk('select');addChoices(add);add.addEventListener('change',()=>{if(add.value){if(c.items.length<31)c.items.push(add.value);drawCust();}});
   const r=mk('div','drow');r.append(add);card.append(r);
-  card.append(mk('div','small','Order in Thetis: the title line, then the number lines, then all the buttons in the order shown here.'));
+  card.append(mk('div','small','Order in Thetis: the title line, then the number lines, then the readings, then all the buttons, each in the order shown here.'));
   host.append(card);
  });
 }
@@ -7295,7 +7324,7 @@ async function load(keep){
  ST=await state();
  if(!keep||!CUST.length)CUST=JSON.parse(JSON.stringify(ST.custom_containers||[]));
  if(!ST.user_programs)return;
- const act=document.activeElement;const typing=act&&/^(INPUT|SELECT)$/.test(act.tagName)&&act.closest&&act.closest('#u_prog,#u_num');
+ fillTmAdd();const act=document.activeElement;const typing=act&&/^(INPUT|SELECT)$/.test(act.tagName)&&act.closest&&act.closest('#u_prog,#u_num');
  if(!typing){drawProg();drawNum();}
  if(!keep)drawCust();
 }
@@ -7303,7 +7332,21 @@ const mkbtn=(t,c,f)=>{const b=mk('button',c,t);b.type='button';b.addEventListene
 if($('u_prog_row'))$('u_prog_row').prepend(mkbtn('Save programs','act',saveProg));
 if($('u_num_row'))$('u_num_row').prepend(mkbtn('Save numbers','act',saveNum));
 if($('u_cust_row')){$('u_cust_row').prepend(mkbtn('Add a container','',()=>{if(CUST.length<8){CUST.push({name:'My container '+(CUST.length+1),columns:3,style:'legacy',items:[]});drawCust();}}),mkbtn('Save containers','act',saveCust));}
-['u_prog_row','u_num_row','u_cust_row'].forEach(id=>{const r=$(id);if(r)r.append(rebuildBtn());});
+['u_tm_row','u_kw_row','u_cust_row'].forEach(id=>{const r=$(id);if(r)r.append(rebuildBtn());});
+/* Telemetry: add one of Thetis's own bars from a dropdown */
+const THR=[['SIGNAL_STRENGTH','S-meter (signal strength)'],['MIC','Mic level'],['ALC','ALC'],['COMP','Compressor'],['LEVELER','Leveler'],['LEVELER_GAIN','Leveler gain'],['CFC','CFC'],['EQ','Equaliser'],['PWR','Forward power (Thetis)'],['SWR','SWR (Thetis)'],['REVERSE_PWR','Reverse power (Thetis)']];
+function fillTmAdd(){
+ const sel=$('d_tmadd');if(!sel||!ST||!ST.thetis_meters||document.activeElement===sel)return;
+ const have=ST.thetis_meters.order||[],key=have.join(',');if(sel.dataset.k===key)return;sel.dataset.k=key;
+ sel.textContent='';const o0=mk('option',null,'Choose a reading...');o0.value='';sel.append(o0);
+ THR.forEach(([t,n])=>{if(have.indexOf('th_'+t)>=0)return;const o=mk('option',null,n);o.value='th_'+t;sel.append(o);});
+}
+if($('d_tmadd'))$('d_tmadd').addEventListener('change',async e=>{
+ const v=e.target.value;if(!v)return;const cur=ST.thetis_meters;
+ const j=await api('thetis_meters',{order:(cur.order||[]).concat([v]),title:cur.title});
+ const m=$('msg');if(m){m.textContent=j.message||j.error||'';}
+ await load(true);
+});
 load();
 document.addEventListener('click',e=>{const b=e.target.closest&&e.target.closest('#dnav button');if(b)setTimeout(()=>load(true),50);});
 }catch(e){if(window.console)console.log('user settings:',e);}})();
@@ -7730,6 +7773,15 @@ def selftest():
     check("button order saved: unknown and repeated buttons dropped, columns limited to 2-6",
           ok_ and bridge.thetis_buttons == {"order": ["tune", "gap", "opr", "fanup"], "columns": 6, "tv": 1, "title": TITLE_CTRL, "style": "legacy"}
           and bridge.settings["thetis_buttons"]["order"][0] == "tune" and get_state()["thetis_buttons"]["columns"] == 6)
+    ok_, msg_ = bridge.do_action("thetis_meters", {"order": ["status", "th_MIC", "fwd", "th_NOPE", "th_MIC", "th_ALC"]})
+    check("Thetis bars can be added to the Telemetry window (unknown ones refused, no repeats)",
+          ok_ and bridge.thetis_meters["order"] == ["status", "th_MIC", "fwd", "th_ALC"])
+    bridge.do_action("thetis_meters_default")
+    ok_, msg_ = bridge.do_action("custom_containers", {"list": [{"name": "Mix", "columns": 3, "style": "legacy",
+                                 "items": ["tm_fwd", "th_COMP", "th_BOGUS", "tm_title", "open_help"]}]})
+    check("a custom container can hold readings and Thetis bars",
+          ok_ and bridge.custom[0]["items"] == ["tm_fwd", "th_COMP", "open_help"])
+    bridge.do_action("custom_containers", {"list": []})
     check("an empty button list is refused", not bridge.do_action("thetis_buttons", {"order": ["gap"]})[0])
     ok_, msg_ = bridge.do_action("thetis_buttons", {"title": "My amp {ver} <b>100%"})
     check("Controls title saved, cleaned of characters Thetis cannot show (% < >), order kept",
@@ -7746,6 +7798,11 @@ def selftest():
     bridge.do_action("thetis_buttons_default")
     check("standard order restored", bridge.thetis_buttons == {"order": TB_DEFAULT, "columns": 4, "tv": 1, "title": TITLE_CTRL, "style": "legacy"}
           and clean_thetis_buttons(None)["order"] == TB_DEFAULT)
+    ok_, msg_ = bridge.do_action("thetis_buttons", {"order": ["opr", "open_help", "open_panel", "open_applet", "open_help"]})
+    check("the Help / Settings / Applet buttons can be put in the Controls window",
+          ok_ and bridge.thetis_buttons["order"][-3:] == ["open_help", "open_panel", "open_applet"] and "title" not in bridge.thetis_buttons["order"][1:]
+          and "open_help" not in TB_DEFAULT)
+    bridge.do_action("thetis_buttons_default")
 
     c = setup_launch_cmd(r"C:\Radio Scripts\Setup_Thetis_Containers.bat", "kpa1500_settings.json")
     check("Rebuild: setup command is wrapped for cmd /c (outer quotes kept, paths with spaces work)",
