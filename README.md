@@ -4,7 +4,7 @@
 
 Connects an Elecraft KPA1500 amplifier (and an optional Telepost LP-100A meter) to **Thetis** (also Thetis HL2 and SDR-VST3) or **NereusSDR**, with a FlexControl knob, a browser control panel and a small **Applet** window.
 
-Design and on-air testing by KW4EX. Version 2.44.
+Design and on-air testing by KW4EX. Version 2.48.
 
 ## What it does
 - Follows the radio frequency so the amplifier changes band by itself.
@@ -15,7 +15,8 @@ Design and on-air testing by KW4EX. Version 2.44.
 - **Over-drive protection**: set one limit in watts into the amplifier; the bridge reads the radio program's drive setting before you transmit and watches the measured drive, then ignores, warns, or holds the drive at the limit. Only while the amp is in OPERATE (not in STANDBY or while its ATU tunes); short peaks are ignored. Set it in the panel Settings or the Applet Look menu.
 - Works with Thetis or NereusSDR, one at a time; it finds out which one is running.
 - **Applet window**: meters, buttons, knob lines and LP-100A in one small window. Top line with frequency, Operate/Standby and Power. Colours, size, zoom, shrink-to-fit, sections and order are set from the window.
-- Ready-made Thetis windows (Telemetry, Controls, Knob) with your own item order and titles, and a choice of button look (Standard or Legacy) for the Controls window.
+- Ready-made Thetis windows (Telemetry, Controls, Knob, and an optional small Meters window) with your own item order and titles, a choice of button look (Standard or Legacy), and warnings (drive limit, no antenna) shown in the first line of the windows.
+- **Software key** (amplifier firmware 3.07 or newer): the bridge can key the amplifier by network command instead of the hardware KEY line, with a button to switch between the two. TUNE from the bridge drops the amplifier to STANDBY before any RF.
 - Starting a new bridge closes one that is already running; `Stop_Bridge.bat` closes it cleanly.
 
 ## Download

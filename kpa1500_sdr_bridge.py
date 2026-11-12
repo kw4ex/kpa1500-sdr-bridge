@@ -29,6 +29,36 @@ Safety rules built in
     --web-bind 0.0.0.0 (then use --web-token to require a password).
 
 Revision history
+  2.48e              (same revision) Thetis gives every text line a full row, so the 'bridge not running' line is
+                     gone (it was an extra top row). The first line of each window now blanks when the data is stale,
+                     and a bridge closed normally sends '!! BRIDGE STOPPED !!' in it.
+  2.48d              (same revision) Fixed: the warning lines (drive limit, 'no antenna?', bridge not running) took
+                     an extra line at the BOTTOM of every window, because Thetis stacks lines in the saved order. A
+                     warning now replaces the first line of the window (new variable warn_pre) and the 'bridge not
+                     running' line sits in the first line's place; nothing is added at the bottom.
+  2.48c              (same revision) Fixed: Setup left the old height on the Controls window (blank lines at the
+                     bottom); every Thetis window is now fitted to its content (Telemetry too, tighter padding).
+                     The Meters window is now a checkbox in the Applet/panel (Settings > Thetis windows), next to the
+                     Knob window one, and Setup follows it.
+  2.48b              (same revision) Thetis Controls window: one short top line (ON OPR  AMP 7.135 MHz  RX -91 dBm; fan and
+                     fault text removed), the Knob window's connection folded into its top line ('on COM3') with larger
+                     text, window heights fitted to their content, and a new optional compact KPA1500 Meters window
+                     (Fwd and SWR bars) offered by Setup. New variables amp_mode_s, knob_on.
+  2.48 (2026-11-12)  Thetis windows: any warning ('no antenna?', over-drive) now replaces the title line of the Telemetry
+                     and Controls windows (new variables head_tele, head_ctrl; also warn_on, warn_text), and the
+                     'BRIDGE NOT RUNNING' banner is drawn over an existing row, so no blank lines are used up.
+  2.47 (2026-11-11)  The over-drive warning now also shows in the Thetis Telemetry and Controls windows (orange line,
+                     like the no-antenna line). Button style Legacy is the default for the Controls window. The Knob
+                     window is narrower (320). The KEY: SOFT / KEY: HW button is a Controls button option.
+  2.46 (2026-11-11)  TUNE with software key on, Standby-on-Tune on and the amp in OPERATE: the bridge first switches the
+                     software key OFF (^RX, confirmed with ^TQ), then puts the amp in STANDBY (confirmed), and only then
+                     keys the radio. The software key stays off until the tune is over and the amp is back in OPERATE.
+  2.45 (2026-11-11)  Software key (optional, off by default): with amp firmware 3.07 or newer the bridge keys the
+                     amp with the network command ^TX while the radio transmits (^TX30 renewed every 10 s, ^RX when the
+                     radio stops, at exit and on switching off; ^TQ is read back). Switch in the panel Settings, the
+                     Applet, a Controls button (KEY: SOFT / KEY: HW) or the Thetis strings KPA_KEY_TOGGLE, KPA_KEY_SOFT,
+                     KPA_KEY_HW. Thetis variables key_soft, key_text. The hardware KEY IN line keeps working too.
+  2.44 (2026-11-11)  Windows reserved-port check at start-up (yellow warning) and Setup repair of the Thetis button port.
   2.43 (2026-11-11)  Over-drive protection: one limit in watts into the amp, and a choice of Ignore, Warn or Hold at
                      the limit. The bridge reads the radio program's drive setting (CAT ZZPC; Thetis, HL2, SDR-VST3,
                      NereusSDR) before you transmit and also watches the measured drive while transmitting. Hold at
@@ -150,7 +180,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "2.44"
+VERSION = "2.48"
 BUILD_DATE = "2026-11-11"
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -171,6 +201,9 @@ NOANT_DEFAULTS = {"160": -105, "80": -105, "60": -105, "40": -105, "30": -112, "
                   "17": -115, "15": -115, "12": -115, "10": -115, "6": None}
 NOANT_HYST = 3.0          # dB above the limit needed to clear the warning
 NOANT_SETTLE = 1.5        # s ignored after a band change or after transmit
+KEY_MODES = ("hardware", "software")
+KEY_TX_TIMEOUT = 30           # ^TX30: the amp un-keys itself after this many seconds if the bridge goes silent
+KEY_REFRESH = 10.0            # seconds between ^TX renewals while transmitting
 DG_ACTIONS = ("ignore", "warn", "limit")   # over-drive protection: do nothing / warn / hold the drive at the limit
 DG_TOL = 1.10             # measured drive must exceed the limit by this factor (+1 W) before it counts
 DG_SPIKE_S = 0.8          # s the measured drive must stay over the limit before it counts (short peaks are ignored)
@@ -181,7 +214,7 @@ NOANT_LEARN_MARGIN = 6    # learn: limit = level measured with no antenna + this
 
 
 # Thetis Controls window buttons (ids shared with kpa1500_thetis_setup.py)
-TB_DEFAULT = ["title", "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy",
+TB_DEFAULT = ["title", "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key",
               "fault", "lpalarm", "lpmode", "fandn", "fanup"]
 TB_IDS = set(TB_DEFAULT) | {"gap"}
 
@@ -239,7 +272,7 @@ def clean_thetis_buttons(tb):
             cols = 4
     return {"order": order, "columns": cols, "tv": 1,
             "title": clean_title(tb.get("title") if isinstance(tb, dict) else None, TITLE_CTRL),
-            "style": tb.get("style") if isinstance(tb, dict) and tb.get("style") in ("default", "legacy") else "default"}
+            "style": tb.get("style") if isinstance(tb, dict) and tb.get("style") in ("default", "legacy") else "legacy"}
 
 
 def fit_status(s):
@@ -432,6 +465,7 @@ MMIO_COMMANDS = {
     "KPA_FAN_4": ("fan_min", {"speed": 4}), "KPA_FAN_5": ("fan_min", {"speed": 5}),
     "KPA_FAN_UP": "fan_up", "KPA_FAN_DOWN": "fan_down",
     "KPA_DUMMY_OK": "dummy_ok",
+    "KPA_KEY_TOGGLE": "toggle_key", "KPA_KEY_SOFT": "key_soft", "KPA_KEY_HW": "key_hw",
     "KPA_RADIO_TUNE": "radio_tune", "KPA_RADIO_TUNE_STOP": "radio_tune_stop",
 }
 TERMS = {"none": "", "cr": "\r", "lf": "\n", "crlf": "\r\n"}
@@ -856,6 +890,7 @@ KNOB_ACTIONS = [
     ("ant_toggle", "Amp antenna 1 / 2", "Bridge / amplifier", "bridge:toggle_ant"),
     ("dummy_ok", "DUMMY OK (no-antenna warning)", "Bridge / amplifier", "bridge:dummy_ok"),
     ("sot_toggle", "Standby-on-Tune on / off", "Bridge / amplifier", "bridge:toggle_sot"),
+    ("key_toggle", "Amp keying: software / hardware", "Bridge / amplifier", "bridge:toggle_key"),
     ("custom", "Custom command (type it below)", "Custom", "custom"),
 ]
 KNOB_ACTION_MAP = {a[0]: a for a in KNOB_ACTIONS}
@@ -866,7 +901,7 @@ KNOB_SHORT = {"none": "-", "mute": "Mute", "vox": "VOX", "lock": "Lock", "split"
               "rit_clear": "RIT clr", "xit_onoff": "XIT", "nr": "NR", "nb": "NB", "anf": "ANF",
               "step_up": "Step +", "step_down": "Step -", "band_up": "Band +", "band_down": "Band -",
               "mox": "MOX!", "radio_tune": "TUNE", "amp_operate": "OPR/STBY", "atu_tune": "ATU tune",
-              "ant_toggle": "ANT", "dummy_ok": "DUMMY OK", "sot_toggle": "SoT"}
+              "ant_toggle": "ANT", "dummy_ok": "DUMMY OK", "sot_toggle": "SoT", "key_toggle": "KEY"}
 # Thetis "KPA1500 Knob" window: items (ids shared with kpa1500_thetis_setup.py)
 KW_DEFAULT = ["title", "now", "knob", "b1", "b2", "b3", "status"]
 KW_IDS = set(KW_DEFAULT) | {"gap"}
@@ -1251,7 +1286,7 @@ class CatLink(threading.Thread):
 
 APPLET_SECTIONS = ("telemetry", "controls", "knob", "lp100")
 APPLET_ITEMS = ("fwd", "drv", "swr", "refl", "temp", "volts", "amps", "lpwr", "lswr",
-                "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "fault",
+                "opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key", "fault",
                 "fandn", "fanup", "lpalarm", "lpmode", "hfreq", "hopr", "hpwr")
 APPLET_COLORS = ("bg", "panel", "text", "dim", "accent", "ok", "warn", "bad", "meter")
 APPLET_THEMES = ("dark", "light", "contrast", "nereus", "amber")
@@ -1576,6 +1611,7 @@ const BUTTONS=[
  ['atutune','STOP ATU','ATU TUNE',m=>m.amp_atu_tuning==1,'atu_cancel','atu_tune'],
  ['sot','SoT ON','SoT OFF',m=>m.amp_sot==1,'toggle_sot','toggle_sot'],
  ['dummy','DUMMY OK','DUMMY OK',m=>m.dummy_ok==1,'dummy_ok','dummy_ok'],
+ ['key','KEY: SOFT','KEY: HW',m=>m.key_soft==1,'toggle_key','toggle_key'],
  ['fault','FAULT - CLR','NO FAULT',m=>m.amp_fault!=0,'clear_fault','clear_fault'],
  ['fandn','FAN -','FAN -',null,'fan_down','fan_down'],
  ['fanup','FAN +','FAN +',null,'fan_up','fan_up'],
@@ -1889,6 +1925,17 @@ class Bridge:
         self.dummy_ok = set()         # bands where DUMMY OK was pressed
         self.noant_held = False       # amp put in STANDBY by the check
         self.port_warn = ""           # Windows reserved-port problem text ("" = none)
+        # amplifier keying: "hardware" = the KEY IN line only (default); "software" = the bridge also keys the
+        # amp with the network command ^TX while the radio transmits (amp firmware 3.07 or newer)
+        km = self.settings.get("key_mode")
+        self.key_mode = km if km in KEY_MODES else "hardware"
+        self.key_sent = False         # a ^TX is active in the amp
+        self.key_last = 0.0           # when ^TX was last sent
+        self.key_tq = None            # last ^TQ answer (0 none, 1 software, 2 hardware, 3 both)
+        self.key_fw_ok = None         # amp firmware has ^TX (None = not known yet)
+        self.key_msg = ""
+        self.key_hold = False         # software key held off while a Standby-on-Tune TUNE runs
+        self.key_lock = threading.Lock()
         # over-drive protection: one limit in watts at the amplifier input (0 = off)
         dg = self.settings.get("drive_guard") if isinstance(self.settings.get("drive_guard"), dict) else {}
         self.dg_action = dg.get("action") if dg.get("action") in DG_ACTIONS else "warn"
@@ -1933,6 +1980,8 @@ class Bridge:
         self.applet_skin = clean_applet_skin(self.settings.get("applet_skin"))
         self.thetis_meters = clean_thetis_meters(self.settings.get("thetis_meters"))
         self.thetis_knobwin = clean_knob_window(self.settings.get("thetis_knobwin"))
+        mw_ = self.settings.get("thetis_meterswin")
+        self.thetis_meterswin = {"enabled": bool(isinstance(mw_, dict) and mw_.get("enabled") is True)}
         self.tci_ws = None
         self.tci_send_lock = threading.Lock()
         self.tune_t = 0.0             # when the current tune started
@@ -2131,6 +2180,7 @@ class Bridge:
                     self.update_freq()
                 elif name == "trx" and rx == self.a.rx:
                     self.tx = args[1].lower() == "true"
+                    self.key_follow()
                     if not self.tx:
                         self.radio_fwd, self.radio_swr = 0.0, None
                         self.rx_quiet_until = time.time() + NOANT_SETTLE
@@ -2721,6 +2771,10 @@ class Bridge:
             prior = self.mode
             if prior is None:
                 return False, "Refused: could not read the amp mode - nothing keyed"
+            if prior == 1 and self.key_mode == "software":
+                okk, mk = self.key_suspend_for_tune()
+                if not okk:
+                    return False, mk
             if prior == 1 and not self.a.dry_run:
                 for _ in range(2):
                     self.amp.set("^OS0;")
@@ -2729,6 +2783,7 @@ class Bridge:
                     if self.mode == 0:
                         break
                 if self.mode != 0:
+                    self.key_resume_after_tune()
                     return False, "Refused: the amp did not confirm STANDBY - nothing keyed"
                 time.sleep(0.1)                  # let the amp's relays settle before RF
         self.saved_mode = prior
@@ -2738,9 +2793,11 @@ class Bridge:
             self.saved_mode = None
             if prior == 1:
                 self.amp.set("^OS1;")
+            self.key_resume_after_tune()
             return False, "Could not reach %s - tune not started (amp put back as it was)" % self.radio_label()
         msg = "TUNE started from the bridge%s%s" % (
-            " - amp in STANDBY first (CONFIRMED)" if prior == 1 else
+            (" - software key off, then amp in STANDBY first (CONFIRMED)" if self.key_mode == "software"
+             else " - amp in STANDBY first (CONFIRMED)") if prior == 1 else
             (" - amp was already in STANDBY" if prior == 0 else
              (" - Standby-on-Tune is OFF: amp left as it is" if not self.standby_on_tune else "")),
             (", auto-stop after %d s" % self.tune_timeout) if self.tune_timeout else "")
@@ -2777,6 +2834,8 @@ class Bridge:
             # always ask the amp right now: a cached reading can be up to ~2 s old
             self.ingest("^OS;", self.amp.get("^OS;"))
             prior = self.mode
+            if self.key_mode == "software" and prior == 1:
+                self.key_suspend_for_tune()
             self.amp.set("^OS0;")
             self.saved_mode = prior
             if prior is None:
@@ -2806,6 +2865,7 @@ class Bridge:
                         "CONFIRMED" if self.mode == 1 else "NOT CONFIRMED!"))
             elif saved == 0:
                 self.log("Amp was not in OPERATE before tune - leaving as is")
+            self.key_resume_after_tune()
 
     # ---- amp polling -----------------------------------------------------
     POLL_SEQ = ["^WS;", "^OS;", "^WS;", "^PWI;", "^WS;", "^PWR;", "^WS;",
@@ -3153,6 +3213,10 @@ class Bridge:
             ok, msg = True, "Ask before Power OFF: %s" % (
                 "ON" if self.confirm_power_off else "OFF")
             self.log(msg)
+        elif name in ("toggle_key", "key_soft", "key_hw"):
+            want = {"key_soft": "software", "key_hw": "hardware",
+                    "toggle_key": "hardware" if self.key_mode == "software" else "software"}[name]
+            ok, msg = self.set_key_mode(want)
         elif name in ("sot_on", "sot_off"):
             self.standby_on_tune = (name == "sot_on")
             ok, msg = True, "Standby-on-Tune %s" % (
@@ -3188,13 +3252,13 @@ class Bridge:
             params = params if isinstance(params, dict) else {}
             if name == "thetis_buttons_default":
                 tb = {"order": list(TB_DEFAULT), "columns": 4, "tv": 1, "title": self.thetis_buttons["title"],
-                      "style": self.thetis_buttons.get("style", "default")}
+                      "style": self.thetis_buttons.get("style", "legacy")}
             else:
                 params = dict(params)
                 params.setdefault("order", self.thetis_buttons["order"])
                 params.setdefault("columns", self.thetis_buttons["columns"])
                 params.setdefault("title", self.thetis_buttons["title"])
-                params.setdefault("style", self.thetis_buttons.get("style", "default"))
+                params.setdefault("style", self.thetis_buttons.get("style", "legacy"))
                 params["tv"] = 1
                 if not isinstance(params.get("order"), list) or not [
                         x for x in params["order"] if x in TB_IDS and x not in ("gap", "title")]:
@@ -3237,6 +3301,13 @@ class Bridge:
             self.save_setting("thetis_knobwin", kw)
             ok, msg = True, ("Thetis Knob window %s. Press 'Rebuild Thetis windows' to put it into Thetis."
                              % ("saved" if kw["enabled"] else "switched OFF (it is taken out at the next rebuild)"))
+        elif name == "thetis_meterswin":
+            params = params if isinstance(params, dict) else {}
+            self.thetis_meterswin = {"enabled": params.get("enabled") is True}
+            self.save_setting("thetis_meterswin", self.thetis_meterswin)
+            ok, msg = True, ("Thetis Meters window %s. Press 'Rebuild Thetis windows' to apply it in Thetis."
+                             % ("switched ON" if self.thetis_meterswin["enabled"] else
+                                "switched OFF (it is taken out at the next rebuild)"))
         elif name == "thetis_rebuild":
             here = os.path.dirname(os.path.abspath(__file__))
             bat = os.path.join(here, "Setup_Thetis_Containers.bat")
@@ -3668,11 +3739,12 @@ class Bridge:
             "noant": self.noant_state(), "noant_limits": dict(self.noant_limits),
             "drive_guard": self.drive_guard_state(),
             "port_warn": self.port_warn,
+            "key_mode": self.key_mode, "key_tq": self.key_tq, "key_sent": self.key_sent,
             "noant_defaults": dict(NOANT_DEFAULTS),
             "tune_timeout": self.tune_timeout, "bridge_tune": self.bridge_tune,
             "thetis_buttons": self.thetis_buttons, "thetis_buttons_default": TB_DEFAULT,
             "thetis_meters": self.thetis_meters, "thetis_meters_default": TM_DEFAULT,
-            "thetis_knobwin": self.thetis_knobwin,
+            "thetis_knobwin": self.thetis_knobwin, "thetis_meterswin": self.thetis_meterswin,
             "knob": dict(self.knob_cfg, connected=bool(self.knob and self.knob.connected),
                          device=self.knob.device if self.knob else "", error=self.knob.error if self.knob else "",
                          mode=self.knob_mode, mode_name=KNOB_MODES[self.knob_mode][0],
@@ -3704,6 +3776,7 @@ class Bridge:
             "amp_online": int(self.amp_ok),
             "amp_operate": int(self.mode == 1),
             "amp_mode": self.mode_text(),
+            "amp_mode_s": {"OPERATE": "OPR", "STANDBY": "STBY"}.get(self.mode_text(), self.mode_text()),
             "amp_power": self.power_text(),
             "amp_tx": int(self.transmitting()),
             "amp_fwd": int(self.fwd), "amp_refl": int(self.refl),
@@ -3720,6 +3793,8 @@ class Bridge:
             "amp_ant": self.ant or 0,
             "amp_fan": self.fan_speed if self.fan_speed is not None else 0,
             "amp_fan_min": self.fan_min if self.fan_min is not None else 0,
+            "key_soft": int(self.key_mode == "software"),
+            "key_text": "SOFT" if self.key_mode == "software" else "HW",
             "amp_sot": int(self.standby_on_tune),
             "amp_sot_text": "ON" if self.standby_on_tune else "OFF",
             "amp_freq": self.freq_text(),
@@ -3740,6 +3815,12 @@ class Bridge:
             "noant_text": na["text"],
             "drvlim": int(self.drive_guard_state()["warn"]),
             "drvlim_text": self.drive_guard_state()["text"],
+            "warn_pre": self.warn_pre(na),
+            "head_ctrl": self.head_line(self.thetis_buttons.get("title"), TITLE_CTRL, na),
+            "head_tele": self.head_line(self.thetis_meters.get("title"), TITLE_TELE, na),
+            "warn_on": int(na["warn"] or self.drive_guard_state()["warn"]),
+            "warn_text": "  ".join(t for t in (na["text"] if na["warn"] else "",
+                                               self.drive_guard_state()["text"] if self.drive_guard_state()["warn"] else "") if t),
             "portwarn": int(bool(self.port_warn)),
             "portwarn_text": self.port_warn,
             "knob_mode": KNOB_MODES[self.knob_mode][0] if (self.knob and self.knob.connected) else "--",
@@ -3747,6 +3828,7 @@ class Bridge:
             "knob_now": KNOB_MODES[self.knob_mode][0],
             "knob_k": self.knob_line("knob"), "knob_b1": self.knob_line("b1"),
             "knob_b2": self.knob_line("b2"), "knob_b3": self.knob_line("b3"),
+            "knob_on": (("on " + self.knob.device) if (self.knob and self.knob.connected) else "no FlexControl"),
             "knob_status": (("FlexControl on " + self.knob.device) if (self.knob and self.knob.connected)
                             else ("FlexControl: " + ((self.knob.error if self.knob else "") or "off")
                                   if self.knob_cfg["port"] else "FlexControl: off")),
@@ -3780,6 +3862,16 @@ class Bridge:
                 except OSError:
                     pass
             self.stop.wait(period)
+        self.stopped_flag = True            # a last frame so Thetis shows that the bridge was closed
+        vals = self.mmio_vars()
+        for _ in range(3):
+            for host, port, fmt, term, root in self.mmio_targets():
+                try:
+                    for dg in mmio_encode(vals, fmt, term, root):
+                        sock.sendto(dg, (host, port))
+                except OSError:
+                    pass
+            time.sleep(0.05)
 
     def mmio_in_loop(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -3823,6 +3915,136 @@ class Bridge:
                 ok, msg = self.do_action(action, aparams)
                 self.log("Thetis button %s -> %s%s" % (tok, "" if ok else "REFUSED: ", msg))
                 break
+
+    # ---- amplifier keying over the network (^TX / ^RX / ^TQ, firmware 3.07 or newer) -------------
+    def key_firmware_ok(self):
+        """True when the amp firmware has the ^TX command (3.07 or newer); asks the amp once"""
+        if self.key_fw_ok is None:
+            r = self.amp.get("^RV;")
+            m = re.match(r"\^RV\s*0*(\d+)\.(\d+)", r or "", re.I)
+            if m:
+                self.key_fw_ok = (int(m.group(1)), int(m.group(2))) >= (3, 7)
+                self.key_fw = "%s.%s" % (m.group(1), m.group(2))
+        return self.key_fw_ok
+
+    def set_key_mode(self, want):
+        if want not in KEY_MODES:
+            return False, "Unknown key mode"
+        if want == "software":
+            if not self.a.dry_run:
+                ok = self.key_firmware_ok()
+                if ok is None:
+                    return False, "Software key: the amplifier did not answer, so its firmware is not known. Try again."
+                if not ok:
+                    return False, ("Software key refused: the amplifier firmware (%s) is older than 3.07. "
+                                   "Update the amp firmware, or keep the hardware key." % getattr(self, "key_fw", "?"))
+        self.key_mode = want
+        self.save_setting("key_mode", want)
+        if want == "hardware":
+            self.key_release("switched to hardware key")
+        else:
+            self.key_follow()
+        msg = ("Amp keying: SOFTWARE - the bridge keys the amp over the network while the radio transmits. "
+               "The hardware KEY IN line still works too (either one keys the amp)."
+               if want == "software" else
+               "Amp keying: HARDWARE - only the KEY IN line keys the amp.")
+        self.log(msg)
+        return True, msg
+
+    def key_on(self):
+        with self.key_lock:
+            self.amp.set("^TX%d;" % KEY_TX_TIMEOUT)
+            self.key_last = time.time()
+            if not self.key_sent:
+                self.log("Software key: ^TX sent (amp keyed)")
+            self.key_sent = True
+
+    def key_release(self, why=""):
+        with self.key_lock:
+            if self.key_sent:
+                self.amp.set("^RX;")
+                self.log("Software key: ^RX sent (%s)" % (why or "radio stopped transmitting"))
+            self.key_sent = False
+            self.key_tq = None
+
+    def key_suspend_for_tune(self):
+        """TUNE with Standby-on-Tune and software key: switch the software key OFF first (^RX), check with ^TQ
+        that the amp let go, and keep it off until the tune is over. Returns (ok, text)."""
+        self.key_hold = True
+        self.key_release("TUNE: software key off before the amp goes to STANDBY")
+        if self.a.dry_run or not self.amp_ok:
+            return True, ""
+        for _ in range(3):
+            self.amp.set("^RX;")
+            time.sleep(0.1)
+            r = self.amp.get("^TQ;")
+            m = re.match(r"\^TQ\s*(\d)", r or "")
+            self.key_tq = int(m.group(1)) if m else None
+            if self.key_tq in (0, 2):
+                if self.key_tq == 2:
+                    self.log("Note: the amp's hardware KEY IN line is pulled down (^TQ2) - the software key is off, "
+                             "the cable is still keying the amp")
+                return True, ""
+        self.key_hold = False
+        return False, "Refused: the amp did not release the software key (^TQ%s) - nothing keyed" % self.key_tq
+
+    def key_resume_after_tune(self):
+        if self.key_hold:
+            self.key_hold = False
+            self.log("Software key back on after TUNE")
+            self.key_follow()
+
+    def key_follow(self):
+        """called the moment the radio program reports transmit on or off"""
+        if self.key_mode != "software" or self.key_hold:
+            return
+        if self.tx:
+            self.key_on()
+        else:
+            self.key_release()
+
+    def key_loop(self):
+        last_tq = 0.0
+        while not self.stop.is_set():
+            self.stop.wait(0.2)
+            if self.key_mode != "software" or self.key_hold:
+                continue
+            now = time.time()
+            try:
+                if self.tx and (not self.key_sent or now - self.key_last > KEY_REFRESH):
+                    self.key_on()
+                elif not self.tx and self.key_sent:
+                    self.key_release("safety check: radio is not transmitting")
+                if self.key_sent and now - last_tq > 0.5 and self.amp_ok:
+                    last_tq = now
+                    r = self.amp.get("^TQ;")
+                    m = re.match(r"\^TQ\s*(\d)", r or "")
+                    self.key_tq = int(m.group(1)) if m else None
+                    if self.tx and self.key_tq in (0, 2) and now - self.key_last > 0.6:
+                        self.log("Software key: the amp does not report keyed (^TQ%s) - sending ^TX again" % self.key_tq)
+                        self.key_on()
+            except Exception as e:
+                self.log("Software key loop error: %s" % e)
+        self.key_release("bridge stopping")
+
+    def warn_pre(self, na):
+        """'!! warning !!  ' (or empty): put in front of the first line of a Thetis window that has no title line"""
+        if getattr(self, "stopped_flag", False):
+            return "!! BRIDGE STOPPED !!  "
+        dg = self.drive_guard_state()
+        w = "  ".join(t for t in (na["text"] if na["warn"] else "", dg["text"] if dg["warn"] else "") if t)
+        return ("!! " + w + " !!  ") if w else ""
+
+    def head_line(self, title, default, na):
+        """text for the title line of a Thetis window: the title, or any warning instead of it"""
+        dg = self.drive_guard_state()
+        w = "  ".join(t for t in (na["text"] if na["warn"] else "", dg["text"] if dg["warn"] else "") if t)
+        if getattr(self, "stopped_flag", False):
+            return "!! BRIDGE STOPPED !!"
+        if w:
+            return "!! " + w + " !!"
+        t = title if isinstance(title, str) and title else default
+        return t.replace("{ver}", "v" + VERSION)
 
     def check_reserved_ports(self):
         """Windows only: warn when Windows has reserved a port we need (typical after Hyper-V/WSL/Docker)"""
@@ -3977,6 +4199,8 @@ class Bridge:
         dg = self.drive_guard_state()
         if dg["warn"]:
             s += " | " + dg["text"]
+        if self.key_mode == "software":
+            s += " | KEY SOFT"
         if self.port_warn:
             s += " | PORT PROBLEM (see Help)"
         return s
@@ -4052,6 +4276,7 @@ class Bridge:
         threading.Thread(target=self.tci_loop, daemon=True).start()
         threading.Thread(target=self.poll_loop, daemon=True).start()
         threading.Thread(target=self.drive_guard_loop, daemon=True).start()
+        threading.Thread(target=self.key_loop, daemon=True).start()
         if self.radio_pref == "nereus":
             self.start_cat_link()
         if getattr(self.a, "applet", False) and self.web and not self.a.no_web:
@@ -4091,6 +4316,7 @@ class Bridge:
 MMIO_VAR_HELP = {
     "amp_online": "1 if the amplifier is answering, otherwise 0",
     "amp_operate": "1 = OPERATE, 0 = STANDBY",
+    "amp_mode_s": "short text: OPR, STBY - or OFF / NO LINK (for the compact Thetis windows)",
     "amp_mode": "text: OPERATE, STANDBY, UNKNOWN - or OFF / NO LINK when the amplifier is not answering",
     "amp_power": "text: ON, OFF (was answering, now silent: switched off or lost power) or NO LINK (never answered at this address)",
     "amp_tx": "1 while the radio or amplifier is transmitting",
@@ -4112,6 +4338,8 @@ MMIO_VAR_HELP = {
     "amp_fan": "current fan speed, 0 (off) to 5 (all fans, highest speed)",
     "amp_fan_min": "minimum fan speed you have set, 0 to 5",
     "amp_sot": "1 if Standby-on-Tune is switched on",
+    "key_soft": "1 when the bridge keys the amp by network command (software key); 0 = hardware KEY IN only",
+    "key_text": "text: SOFT or HW (how the amplifier is keyed), for display",
     "amp_freq": "frequency the amp is set to, as text, e.g. 14.025 MHz (read back from the amp)",
     "amp_freq_khz": "frequency the amp is set to, kHz (0 = unknown)",
     "amp_follow": "text: '= radio' when the amp is on the radio frequency, 'radio 7.150 !' when not, '(sent)' if the amp does not report it",
@@ -4127,6 +4355,11 @@ MMIO_VAR_HELP = {
     "noant_text": "the 'no antenna?' warning text (empty when all is well)",
     "drvlim": "1 when the over-drive protection is warning (drive setting or measured drive over the limit)",
     "drvlim_text": "the over-drive warning text (empty when all is well)",
+    "warn_pre": "empty, or '!! any warning !!' - put in front of the first line of a Thetis window that has no title line",
+    "head_ctrl": "title line of the Controls window: its title, or any warning instead of it",
+    "head_tele": "title line of the Telemetry window: its title, or any warning instead of it",
+    "warn_on": "1 when the 'no antenna?' check or the over-drive protection is warning (one shared warning line in the Thetis windows)",
+    "warn_text": "the warning text for that shared line: 'no antenna?' and/or over-drive (empty when all is well)",
     "portwarn": "1 when Windows has reserved a port the bridge or Thetis needs (Thetis buttons or meters would not work)",
     "portwarn_text": "the reserved-port warning text (empty when all is well)",
     "knob_mode": "what the FlexControl knob does now, e.g. VFO A tuning or AF volume (master) ('--' = no knob)",
@@ -4137,6 +4370,7 @@ MMIO_VAR_HELP = {
     "knob_b2": "button 2 functions in short (tap / double tap / hold)",
     "knob_b3": "button 3 functions in short (tap / double tap / hold)",
     "knob_status": "FlexControl connection, e.g. FlexControl on COM7",
+    "knob_on": "short FlexControl connection for the Knob window top line, e.g. on COM7 (or no FlexControl)",
     "amp_sot_text": "text: ON or OFF (Standby-on-Tune), for display",
     "bridge_time": "heartbeat: the time in seconds (Unix time). Thetis can warn when it stops changing (bridge not running)",
     "amp_tune_active": "1 while the radio's TUNE is active",
@@ -4184,6 +4418,9 @@ MMIO_CMD_HELP = {
     "KPA_RADIO_TUNE": "Start the RADIO's tune the safe way: amp to STANDBY first (Standby-on-Tune), "
                       "confirmed, then Thetis TUNE on. Stops by itself after the auto-stop time",
     "KPA_RADIO_TUNE_STOP": "Stop the radio's tune (the amp returns to OPERATE if it was in OPERATE)",
+    "KPA_KEY_TOGGLE": "Amp keying: switch between software key (network command) and the hardware KEY IN line",
+    "KPA_KEY_SOFT": "Amp keying: software key on (amp firmware 3.07 or newer)",
+    "KPA_KEY_HW": "Amp keying: hardware KEY IN only",
     "KPA_DUMMY_OK": "DUMMY OK: a dummy load is connected on purpose - silences the 'no antenna?' "
                     "warning on this band (press again to undo)",
 }
@@ -4474,6 +4711,36 @@ def help_sections():
             "**Remove everything:** run uninstall_kpa1500_sdr_bridge.sh in the install folder; it asks "
             "before each part."),
     ]))
+    S.append(("softkey", "Software key (keying the amp over the network)", [
+        _P("Amplifier firmware **3.07 or newer** can be keyed by a network command, so a hardware KEY IN "
+           "cable is not strictly needed. This option is **off by default** (hardware key only)."),
+        _UL("**What it does.** While the radio transmits (Thetis, Thetis HL2, SDR-VST3 or NereusSDR report "
+            "it over TCI), the bridge sends `^TX30;` to the amp, renews it every 10 seconds, and sends "
+            "`^RX;` the moment the radio stops, when you switch the option off, and when the bridge closes. "
+            "It reads the amp's `^TQ;` answer to confirm the amp is keyed, and sends again if it is not.",
+            "**Safety net.** `^TX30` makes the amp un-key itself after 30 seconds if the bridge stops "
+            "talking (crash, network loss). The amp's RESET button also cancels it.",
+            "**The hardware KEY IN line keeps working.** The amp is keyed if either one asks. Switching to "
+            "hardware only stops the bridge sending `^TX`; it does not disconnect the cable.",
+            "**Firmware check.** If the amp reports firmware older than 3.07 the bridge refuses to switch it on "
+            "and says why.",
+            "**TUNE.** With software key on, Standby-on-Tune on and the amp in OPERATE, pressing TUNE makes the "
+            "bridge do this in order: (1) software key OFF (`^RX;`, checked with `^TQ;`), (2) amp to STANDBY, "
+            "confirmed, (3) only then the radio's TUNE keys the transmitter. The software key stays off during "
+            "the tune and comes back after the amp is returned to OPERATE. If the amp does not confirm each "
+            "step, nothing is keyed. (A tune started inside the radio program itself does the same, but the "
+            "radio is already transmitting by then, so use the bridge's TUNE button.)"),
+        _P("**Switch it** in the panel (Settings > Software key), from the Applet, with the **KEY** button in the "
+           "Thetis Controls window (add it in Settings > Thetis Controls buttons, then Rebuild Thetis windows), "
+           "or with the Thetis strings `KPA_KEY_TOGGLE`, `KPA_KEY_SOFT` and `KPA_KEY_HW`."),
+        _WARN("**Timing - read this before using it.** The amp needs about 5 ms of key before RF arrives. The "
+              "bridge learns that the radio is transmitting from the same message that starts the transmission, "
+              "then the command travels over the network. If RF reaches the amp before it is keyed, the amp's "
+              "relays can switch with power on them. A hardware key line from the radio is keyed *before* RF by "
+              "the radio's own sequencing. So: test **with a dummy load and low power first**, check in the log that "
+              "`^TX` is sent before the amp shows power (`^TQ` = 1), and keep the hardware key connected until "
+              "you are sure. If the radio program lets you delay RF after PTT, use it."),
+    ]))
     S.append(("drive", "Over-drive protection (drive limit)", [
         _P("Too much drive can damage the amplifier. This option lets you set **one limit, in watts, "
            "for the drive going into the KPA1500**, and choose what the bridge does when the drive is "
@@ -4495,7 +4762,8 @@ def help_sections():
             "Hermes Lite 2. Slider 80 on a 100 W radio is 80 W; on a 5 W radio it is only 4 W."),
         _TABLE(["If the drive goes over", "What happens"], [
             ["Ignore", "Nothing. The check is off."],
-            ["Warn", "A red message: a bar across the panel, a banner in the Applet, a line in the status "
+            ["Warn", "A red message: a bar across the panel, a banner in the Applet, the title line of the Thetis "
+                     "Telemetry and Controls windows (the warning replaces the title while it lasts; after Rebuild Thetis windows), a line in the status "
                      "text and in the bridge window. Nothing is changed."],
             ["Hold at the limit", "The same warning, **and** the bridge puts the radio's drive setting back "
                                   "to the limit (so it happens before you key up). If the measured drive "
@@ -4620,7 +4888,15 @@ def help_sections():
            "`B1  tap >AF   2x >AGC   hold Mute` (`>AF` = the press switches the knob to AF volume; 2x = double "
            "tap; hold = long press). The lines change as the mode changes. Choose its title (`{ver}` = bridge "
            "version), its lines and their order, or switch it off, under **Settings > Thetis windows > Knob "
-           "window**, then press **Rebuild Thetis windows**. The panel's Thetis look shows it too."),
+           "window**, then press **Rebuild Thetis windows**. The panel's Thetis look shows it too. The "
+           "connection is shown on its top line (`on COM3`)."),
+        _P("**KPA1500 Meters window in Thetis (optional):** a small fourth window with just a status line "
+           "(`KPA1500  ON OPR    Fwd 0 W`) and the **Fwd** and **SWR** bars, with fewer scale marks so it can stay small. "
+           "`Setup_Thetis_Containers.bat` asks whether to add it. Answer Yes and run it again to rebuild it; "
+           "No leaves it out (an existing one stays unless you remove it). You can also tick **Show the KPA1500 "
+           "Meters window in Thetis** in the Applet (next to the Knob window) and press **Rebuild Thetis windows**. "
+           "All windows are re-fitted in height every time Setup runs, so there are no blank lines at the bottom; "
+           "their width is yours to set."),
         _NOTE("The CAT functions use Thetis' TCI command `run_cat_ex`. If Settings says 'Thetis does not run CAT "
               "commands over TCI', update Thetis. MOX on a knob button really transmits; it is refused while "
               "the 'no antenna?' warning shows."),
@@ -4793,7 +5069,7 @@ def help_sections():
         _P("**Your own layout:** in the browser panel open **Settings > Thetis windows**. For the "
            "**Telemetry window** choose which lines and bars it shows and in which order (status line, "
            "AMP frequency line, forward / SWR / drive bars, the text lines, the LP-100A bars and line, a "
-           "**Title line** and blank lines). For the **Controls window** (it has a **Title line** item too) pick the **Button style** (Standard = black buttons that turn blue when on, as before; Legacy = near-black rounded buttons with a thin grey border) and move buttons with the arrows, take "
+           "**Title line** and blank lines). For the **Controls window** (it has a **Title line** item too) pick the **Button style** (Legacy = near-black rounded buttons with a thin grey border, the default; Standard = black buttons that turn blue when on) and move buttons with the arrows, take "
            "out the ones you never use (x), put them back (+), add a blank space, and choose 3 to 6 columns. "
            "Each window has a **Title** you can type, for example `KW4EX {ver} Amp` - `{ver}` shows the "
            "bridge version (if the Telemetry title shows it, the AMP line leaves it out). "
@@ -4827,10 +5103,10 @@ def help_sections():
             "**Text lines**: reflected power, gain, where the drive figure comes from; PA temperature, "
             "volts, amps and fan; fault and Standby-on-Tune; LP-100A R, X, |Z| and return loss.",
             "SWR reads 1.0 when there is no RF (the amp keeps its last SWR otherwise)."),
-        _WARN("If the bridge stops, a red line **BRIDGE NOT RUNNING - data frozen** appears at the bottom "
-              "of both windows within about 5 seconds, and the Controls buttons go dark. Readings shown "
-              "are then old and the buttons do nothing. Start the bridge again and everything comes back. "
-              "While all is well that bottom line is simply blank."),
+        _WARN("If the bridge is closed normally, the first line of each Thetis window shows **!! BRIDGE STOPPED !!**. "
+              "If it stops suddenly or freezes, that first line goes blank within about 5 seconds and the Controls "
+              "buttons go dark. Readings shown are then old and the buttons do nothing. Start the bridge again and "
+              "everything comes back."),
         _P("**Safety options for the AMP button** are in the browser panel under **Settings** (or keys K and B "
            "in the bridge window): **Allow Thetis to power off the amp** and **Block power off while "
            "transmitting**. Untick the second one only if you want an emergency power-off to work even "
@@ -5014,8 +5290,8 @@ SWR %tatg.amp_swr%   TMP %tatg.amp_temp% C   FLT %tatg.amp_fault_text%
                                                      "`start_kpa_sdr_bridge.bat` to read the message."],
             ["Container shows nothing in Thetis", "Click Recover Container, tick Auto height, check Show RX/Show TX "
                                                   "and the background colour."],
-            ["'BRIDGE NOT RUNNING - data frozen' in Thetis", "The bridge is closed or stuck. Start it with "
-                                                             "start_kpa_sdr_bridge.bat. The line goes away within seconds."],
+            ["First line of a Thetis window is blank or says 'BRIDGE STOPPED'", "The bridge is closed or stuck. Start it with "
+                                                             "start_kpa_sdr_bridge.bat. The line comes back within seconds."],
             ["All Controls buttons dark, no warning line", "Normal for a moment after Thetis starts. If it stays, "
                                                            "check the bridge is running with `--mmio-port 50100`."],
             ["Setup says Thetis is running", "Answer Y to let the setup close it, or close Thetis yourself (it can take a few seconds), then press Enter. If Thetis shows a question when closing, answer it."],
@@ -5650,6 +5926,7 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <label title="Lets a Thetis container button (KPA_POWER_OFF) switch the amplifier off"><input type="checkbox" id="d_thetisoff"> Allow Thetis to power off the amp</label>
   <label title="Untick only if you want an emergency power off to work even while the radio is transmitting"><input type="checkbox" id="d_blockofftx"> Block power off while transmitting</label>
   <label title="Put the amp in STANDBY for the radio's TUNE and back to OPERATE afterwards"><input type="checkbox" id="d_sot"> Standby-on-Tune</label>
+  <label title="Key the amp with a network command while the radio transmits (amp firmware 3.07 or newer). The hardware KEY IN line still works too."><input type="checkbox" id="d_key"> Software key (needs amp firmware 3.07+)</label>
   <label title="A TUNE started with the bridge TUNE button stops by itself after this time">Auto-stop TUNE after <input type="text" id="d_tunemax" size="3" inputmode="numeric"> s (0 = never)</label>
  </div>
  <div class="dh">Over-drive protection <span class="small">(drive going into the amplifier)</span></div>
@@ -5690,6 +5967,8 @@ min-height:2.4rem;padding:.1rem;white-space:nowrap;overflow:hidden}
   <label title="Standard: black buttons that turn blue when on (the look the windows always had). Legacy: near-black rounded buttons with a thin grey border, as in the Container Manager. Press Rebuild Thetis windows to put it into Thetis.">Button style <select id="d_tbstyle"><option value="default">Standard</option><option value="legacy">Legacy</option></select></label>
   <button id="d_tbgap">Add blank space</button><button id="d_tbdef">Standard order</button>
  </div>
+ <div class="dsub">Meters window <span class="small">(small window with just the forward power and SWR bars)</span></div>
+ <div class="drow"><label><input type="checkbox" id="d_mwon"> Show the KPA1500 Meters window in Thetis</label></div>
  <div class="dsub">Knob window <span class="small">(what the FlexControl knob and buttons do right now)</span></div>
  <div class="drow"><label><input type="checkbox" id="d_kwon"> Show the KPA1500 Knob window in Thetis</label>
   <label>Title <input type="text" id="d_kwtitle" size="32" maxlength="48" autocomplete="off"></label></div>
@@ -6002,13 +6281,14 @@ const TBTN={   // id: [lit label, dark label, lit?, action when lit, action when
  atutune:['STOP ATU','ATU TUNE',m=>m.amp_atu_tuning==1,'atu_cancel','atu_tune','','Amp ATU tune / stop','ATU TUNE'],
  sot:['SoT ON','SoT OFF',m=>m.amp_sot==1,'toggle_sot','toggle_sot','','Standby-on-Tune','SoT'],
  dummy:['DUMMY OK','DUMMY OK',m=>m.dummy_ok==1,'dummy_ok','dummy_ok','','DUMMY OK: a dummy load is connected on purpose (silences the no-antenna warning on this band)','DUMMY OK'],
+ key:['KEY: SOFT','KEY: HW',m=>m.key_soft==1,'toggle_key','toggle_key','','Amp keying: software (network command) or the hardware KEY IN line. Needs amp firmware 3.07 or newer','KEY soft / hw'],
  fault:['FAULT - CLR','NO FAULT',m=>m.amp_fault!=0,'clear_fault','clear_fault','','Fault: press to clear','FAULT clear'],
  lpalarm:['LP ALARM','LP ALARM',null,'lp_alarm','lp_alarm','lp','LP-100A alarm','LP ALARM'],
  lpmode:['LP MODE','LP MODE',null,'lp_mode','lp_mode','lp','LP-100A mode','LP MODE'],
  fandn:['FAN -','FAN -',null,'fan_down','fan_down','','Lower the minimum fan speed','FAN -'],
  fanup:['FAN +','FAN +',null,'fan_up','fan_up','','Raise the minimum fan speed','FAN +'],
  gap:['','',null,null,null,'','','(blank space)']};
-const TB_STD=['title','opr','atu','ant','amp','tune','atutune','sot','dummy','fault','lpalarm','lpmode','fandn','fanup'];
+const TB_STD=['title','opr','atu','ant','amp','tune','atutune','sot','dummy','key','fault','lpalarm','lpmode','fandn','fanup'];
 const TH={};
 (function buildThetis(){
  const host=$('thetis');
@@ -6316,6 +6596,7 @@ function syncNa(s){
  if(document.activeElement!==$('d_na'))$('d_na').checked=!!na.enabled;
  if(document.activeElement!==$('d_naact'))$('d_naact').value=na.action||'warn';
  if(document.activeElement!==$('d_sot'))$('d_sot').checked=!!s.standby_on_tune;
+ if(document.activeElement!==$('d_key'))$('d_key').checked=(s.key_mode==='software');
  if(document.activeElement!==$('d_tunemax'))$('d_tunemax').value=String(s.tune_timeout!=null?s.tune_timeout:20);
  NABANDS.forEach(b=>{const i=$('d_na_'+b);if(document.activeElement!==i)i.value=lim[b]==null?'':String(lim[b]);
   i.parentNode.style.fontWeight=(b===na.band)?'700':'';});
@@ -6330,6 +6611,7 @@ $('d_dgrw').addEventListener('change',e=>send('drive_guard',{radio_w:e.target.va
 $('d_na').addEventListener('change',e=>send(e.target.checked?'noant_on':'noant_off'));
 $('d_naact').addEventListener('change',e=>send('noant_action',{action:e.target.value}));
 $('d_sot').addEventListener('change',e=>send(e.target.checked?'sot_on':'sot_off'));
+$('d_key').addEventListener('change',e=>send(e.target.checked?'key_soft':'key_hw'));
 $('d_tunemax').addEventListener('change',e=>send('tune_timeout',{s:e.target.value.trim()}));
 $('d_nalearn').addEventListener('click',()=>{if(confirm('Learn the limit for the band the radio is on now, from the receive level now?\n\nThe antenna must be DISCONNECTED (or the radio switched to no antenna) for this.'))send('noant_learn');});
 $('d_nadef').addEventListener('click',()=>{if(confirm('Put all no-antenna limits back to the defaults?'))send('noant_defaults');});
@@ -6427,10 +6709,11 @@ function syncDg(s){
 }
 function syncTb(s){
  edSync(EDIT.tb,s);edSync(EDIT.tm,s);edSync(EDIT.kw,s);
+ if(document.activeElement!==$('d_mwon'))$('d_mwon').checked=!!(s.thetis_meterswin&&s.thetis_meterswin.enabled);
  if(document.activeElement!==$('d_kwon'))$('d_kwon').checked=!(s.thetis_knobwin&&s.thetis_knobwin.enabled===false);
  const tb=s.thetis_buttons||{columns:4};
  if(document.activeElement!==$('d_tbcols'))$('d_tbcols').value=String(tb.columns);
- if(document.activeElement!==$('d_tbstyle'))$('d_tbstyle').value=tb.style||'default';
+ if(document.activeElement!==$('d_tbstyle'))$('d_tbstyle').value=tb.style||'legacy';
  $('d_tbbuild').disabled=!s.is_windows;$('d_tbbuild').title=s.is_windows?'Opens the setup on the bridge computer':'Only when the bridge runs on Windows';
 }
 $('d_tbcols').addEventListener('change',e=>{const o=edCur(EDIT.tb);o.columns=+e.target.value;edSave(EDIT.tb,o);});
@@ -6444,6 +6727,7 @@ $('d_kwtitle').addEventListener('change',e=>{const o=edCur(EDIT.kw);o.title=e.ta
 $('d_kwgap').addEventListener('click',()=>{const o=edCur(EDIT.kw);o.order.push('gap');edSave(EDIT.kw,o);});
 $('d_kwdef').addEventListener('click',()=>{if(confirm('Put the Knob window back in the standard order?'))send('thetis_knobwin_default');});
 $('d_kwon').addEventListener('change',e=>send('thetis_knobwin',{enabled:e.target.checked}));
+$('d_mwon').addEventListener('change',e=>send('thetis_meterswin',{enabled:e.target.checked}));
 $('d_tmtitle').addEventListener('change',e=>{const o=edCur(EDIT.tm);o.title=e.target.value.trim();edSave(EDIT.tm,o);});
 $('d_tbbuild').addEventListener('click',()=>{if(confirm('Open the Thetis setup now? It rebuilds the KPA1500 windows with this button order.\n\nThe setup window asks WHICH program to rebuild them in (Thetis, Thetis HL2 or SDR-VST3, whichever are installed), offers to close it for you and to start it again afterwards. A backup is made first.'))send('thetis_rebuild');});
 $('d_ampfind').addEventListener('click',ampFind);
@@ -6501,6 +6785,7 @@ class FakeAmp(threading.Thread):
     def __init__(self, host="127.0.0.1", port=0):
         super().__init__(daemon=True)
         self.boot, self.junk, self.serial, self.firmware = False, False, "00022", "03.02"
+        self.keyed, self.tx_cmds = False, []
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((host, port))
         self.port = self.sock.getsockname()[1]
@@ -6578,6 +6863,14 @@ class FakeAmp(threading.Thread):
                 self.ant = int(c[3])
             elif c == "^TP;":
                 out = "^TP0;"
+            elif re.fullmatch(r"\^TX\d*;", c):
+                self.keyed = True
+                self.tx_cmds.append(c)
+            elif c == "^RX;":
+                self.keyed = False
+                self.tx_cmds.append(c)
+            elif c == "^TQ;":
+                out = "^TQ%d;" % (1 if self.keyed else 0)
             if out:
                 self.sock.sendto(out.encode(), addr)
 
@@ -6902,7 +7195,7 @@ def selftest():
     print("-- Thetis Controls button order --")
     ok_, msg_ = bridge.do_action("thetis_buttons", {"order": ["tune", "gap", "opr", "bogus", "opr", "fanup"], "columns": 9})
     check("button order saved: unknown and repeated buttons dropped, columns limited to 2-6",
-          ok_ and bridge.thetis_buttons == {"order": ["tune", "gap", "opr", "fanup"], "columns": 6, "tv": 1, "title": TITLE_CTRL, "style": "default"}
+          ok_ and bridge.thetis_buttons == {"order": ["tune", "gap", "opr", "fanup"], "columns": 6, "tv": 1, "title": TITLE_CTRL, "style": "legacy"}
           and bridge.settings["thetis_buttons"]["order"][0] == "tune" and get_state()["thetis_buttons"]["columns"] == 6)
     check("an empty button list is refused", not bridge.do_action("thetis_buttons", {"order": ["gap"]})[0])
     ok_, msg_ = bridge.do_action("thetis_buttons", {"title": "My amp {ver} <b>100%"})
@@ -6918,7 +7211,7 @@ def selftest():
           and clean_thetis_meters(None) == {"order": TM_DEFAULT, "title": TITLE_TELE})
     bridge.do_action("thetis_buttons", {"title": TITLE_CTRL})
     bridge.do_action("thetis_buttons_default")
-    check("standard order restored", bridge.thetis_buttons == {"order": TB_DEFAULT, "columns": 4, "tv": 1, "title": TITLE_CTRL, "style": "default"}
+    check("standard order restored", bridge.thetis_buttons == {"order": TB_DEFAULT, "columns": 4, "tv": 1, "title": TITLE_CTRL, "style": "legacy"}
           and clean_thetis_buttons(None)["order"] == TB_DEFAULT)
 
     c = setup_launch_cmd(r"C:\Radio Scripts\Setup_Thetis_Containers.bat", "kpa1500_settings.json")
@@ -7010,6 +7303,9 @@ def selftest():
     check("drive setting read from the radio (ZZPC 90) is over the limit: warning, nothing changed",
           ok1 and bridge.dg_slider == 90 and dgs_["state"] == "slider" and dgs_["warn"]
           and bridge.mmio_vars()["drvlim"] == 1 and "DRIVE SETTING" in bridge.mmio_vars()["drvlim_text"]
+          and bridge.mmio_vars()["warn_on"] == 1 and "DRIVE SETTING" in bridge.mmio_vars()["warn_text"]
+          and "DRIVE SETTING" in bridge.mmio_vars()["head_ctrl"] and "DRIVE SETTING" in bridge.mmio_vars()["head_tele"]
+          and bridge.mmio_vars()["warn_pre"].startswith("!! DRIVE SETTING") and bridge.mmio_vars()["warn_pre"].endswith("!!  ")
           and "DRIVE SETTING" in bridge.status_text())
     bridge.do_action("drive_guard", {"action": "limit"})
     bridge.dg_clamp_t = 0.0
@@ -7110,6 +7406,10 @@ def selftest():
           bridge.thetis_knobwin["enabled"] is False and bridge.do_action("thetis_knobwin_default")[0]
           and bridge.thetis_knobwin["order"] == KW_DEFAULT)
     bridge.do_action("thetis_knobwin", {"enabled": True, "title": TITLE_KNOB})
+    check("Meters window: off by default, can be switched on and is saved",
+          get_state()["thetis_meterswin"] == {"enabled": False} and bridge.do_action("thetis_meterswin", {"enabled": True})[0]
+          and bridge.settings["thetis_meterswin"] == {"enabled": True} and get_state()["thetis_meterswin"]["enabled"] is True)
+    bridge.do_action("thetis_meterswin", {"enabled": False})
     st = get_state()
     check("panel state shows the knob (connected, mode, last press)",
           st["knob"]["connected"] and st["knob"]["mode"] == "vfoa" and st["knob"]["last"] == "X1S")
@@ -8024,6 +8324,76 @@ def selftest():
     check("no warning when nothing is reserved", port_problems([], [], 50100, 50101, 8080, [("Thetis", 50102)]) == [])
     check("the bridge's own reserved ports are reported",
           len(port_problems([(50100, 50101)], [(8080, 8080)], 50100, 50101, 8080, [])) == 3)
+    # ---- software key (^TX / ^RX / ^TQ)
+    amp.tx_cmds.clear()
+    thetis.send_text("trx:0,true;")
+    time.sleep(0.4)
+    check("hardware key mode (the default): the bridge never sends ^TX", bridge.key_mode == "hardware" and not amp.tx_cmds)
+    thetis.send_text("trx:0,false;")
+    ok_, msg_ = bridge.set_key_mode("software")
+    check("software key is refused with a plain message on firmware older than 3.07",
+          (not ok_) and "3.07" in msg_ and bridge.key_mode == "hardware")
+    amp.firmware = "03.07"
+    bridge.key_fw_ok = None
+    threading.Thread(target=bridge.key_loop, daemon=True).start()
+    ok_, msg_ = bridge.set_key_mode("software")
+    check("software key is accepted on firmware 3.07 and saved", ok_ and bridge.key_mode == "software"
+          and bridge.settings.get("key_mode") in (None, "software") and bridge.mmio_vars()["key_soft"] == 1)
+    thetis.send_text("trx:0,true;")
+    check("radio transmit -> the bridge sends ^TX30 and the amp is keyed",
+          wait_for(lambda: amp.keyed and "^TX30;" in amp.tx_cmds))
+    check("the amp's ^TQ answer is read back while keyed", wait_for(lambda: bridge.key_tq == 1))
+    thetis.send_text("trx:0,false;")
+    check("radio stops transmitting -> ^RX is sent and the amp is un-keyed",
+          wait_for(lambda: (not amp.keyed) and amp.tx_cmds[-1] == "^RX;"))
+    amp.tx_cmds.clear()
+    thetis.send_text("trx:0,true;")
+    wait_for(lambda: amp.keyed)
+    amp.keyed = False                       # the amp loses the key (e.g. a dropped UDP packet)
+    check("a keyed state the amp does not confirm is sent again", wait_for(lambda: amp.keyed, 3.0))
+    bridge.do_action("toggle_key")
+    check("switching back to hardware key while transmitting releases the amp at once",
+          bridge.key_mode == "hardware" and wait_for(lambda: not amp.keyed))
+    thetis.send_text("trx:0,false;")
+    time.sleep(0.3)
+    send_cmd("KPA_KEY_SOFT")
+    check("Thetis string KPA_KEY_SOFT switches software key on", wait_for(lambda: bridge.key_mode == "software"))
+    send_cmd("KPA_KEY_TOGGLE")
+    check("Thetis string KPA_KEY_TOGGLE switches it off again", wait_for(lambda: bridge.key_mode == "hardware"))
+    # ---- TUNE with software key + Standby-on-Tune: key off first, then STANDBY, then the radio keys
+    rx_feed(-78.0)
+    bridge.do_action("sot_on")
+    bridge.do_action("key_soft")
+    amp.mode = 1
+    wait_for(lambda: bridge.mode == 1)
+    thetis.send_text("trx:0,false;")
+    amp.keyed = True                       # software key is active when TUNE is pressed
+    bridge.key_sent = True
+    amp.rx_log.clear()
+    tci_before = len(tci_log_) if "tci_log_" in dir() else 0
+    ok_, msg_ = bridge.do_action("radio_tune")
+    seq = list(amp.rx_log)
+    check("TUNE (software key + SoT + OPERATE): ^RX is sent and confirmed with ^TQ before ^OS0 (STANDBY)",
+          ok_ and "^RX;" in seq and "^OS0;" in seq and seq.index("^RX;") < seq.index("^OS0;")
+          and "^TQ;" in seq[:seq.index("^OS0;")] and amp.mode == 0 and not amp.keyed)
+    check("TUNE: the software key stays held off while the tune runs", bridge.key_hold and bridge.tune_active)
+    amp.tx_cmds.clear()
+    thetis.send_text("tune:0,true;trx:0,true;")
+    time.sleep(0.5)
+    check("TUNE: the radio keying during the tune does not send ^TX (amp is in STANDBY)",
+          "^TX30;" not in amp.tx_cmds and not amp.keyed)
+    thetis.send_text("tune:0,false;trx:0,false;")
+    check("TUNE ends: amp back to OPERATE, then the software key is allowed again",
+          wait_for(lambda: amp.mode == 1 and not bridge.key_hold and not bridge.tune_active, 4))
+    thetis.send_text("trx:0,true;")
+    check("after the tune a normal transmit keys the amp by software again", wait_for(lambda: amp.keyed))
+    thetis.send_text("trx:0,false;")
+    wait_for(lambda: not amp.keyed)
+    bridge.do_action("key_hw")
+    hc_ = bridge.mmio_vars()
+    check("with no warning the title lines carry the window titles (with the version)",
+          hc_["warn_on"] == 0 and hc_["head_ctrl"].startswith("KPA1500 v%s" % VERSION) and "Controls" in hc_["head_ctrl"]
+          and "Telemetry" in hc_["head_tele"])
     bridge.port_warn = "TEST PORT PROBLEM"
     check("the port warning reaches the status text, the panel data and the Thetis variables",
           "PORT PROBLEM" in bridge.status_text() and bridge.mmio_vars()["portwarn"] == 1

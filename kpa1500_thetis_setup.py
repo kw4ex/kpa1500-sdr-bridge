@@ -52,6 +52,7 @@ SETUP_VERSION = "2.0"
 IN_PORT, OUT_PORT, OUT_LISTEN = 50100, 50101, 47102   # 47102: below 49152, where Windows does not reserve ports
 CTRL_NAME, TELE_NAME = "KPA1500 Controls - KW4EX", "KPA1500 Telemetry - KW4EX"
 KNOB_NAME = "KPA1500 Knob - KW4EX"
+METERS_NAME = "KPA1500 Meters - KW4EX"
 
 # ---- .NET BinaryFormatter (MS-NRBF) reader / writer --------------------------
 
@@ -805,6 +806,12 @@ class Builder:
         s.set_num("_peakHold", True)
         s.set_num("_historyDuration", 4000)                 # peak held 4 seconds
         s.set_num("_ignoreHistoryDuration", 0)              # peaks from the first moment of TX
+        if getattr(self, "compact", False):                 # the compact Meters window: fewer scale marks, 300 W steps
+            if units == "W" and vmax == 1750:
+                s.set_num("meter_custom_max", 1800)
+                s.set_num("meter_custom_high", 1500)
+            s.set_num("_showSubMarker", False)
+            s.set_num("_hasSubIndicators", False)
         return self._out(s, "CUSTOM_METER_BAR")
 
     def led(self, condition, four):
@@ -1468,6 +1475,25 @@ def items_of(db, cid):
             if k.startswith("meterIGData_") and db.val(k).split("|")[1] == cid]
 
 
+GEO_H = {"TEXT_OVERLAY": 0.0495, "CUSTOM_METER_BAR": 0.0910, "OTHER_BUTTONS": 0.36, "LED": 0.0}
+
+
+def text_row(size):
+    """row height (a fraction of the window WIDTH) Thetis uses for text of this size"""
+    return round(0.0495 + (size - 12.0) * 0.009, 4)
+
+
+def fit_height(width, items, pad=3):
+    """window height in pixels that holds exactly these items (item heights are fractions of the width);
+    overlays take no room of their own"""
+    total = 0.0
+    for it in items:
+        if len(it) > 4 and it[4] is not None:
+            continue
+        total += it[3] if len(it) > 3 and it[3] is not None else GEO_H[it[0]]
+    return int(round(width * total)) + pad
+
+
 def container_rows(cid, notes, width, height, items, x=100, y=100, nfields=23):
     """items: list of (meter_type, settings, item_group_id). Rows for a floating container."""
     f = [cid, "1", str(x), str(y), str(width), str(height), "true", "0", "0", "TOPLEFT", "true", "true",
@@ -1479,11 +1505,22 @@ def container_rows(cid, notes, width, height, items, x=100, y=100, nfields=23):
     y = 0.0
     geo = {"TEXT_OVERLAY": (0.0, 0.0495), "CUSTOM_METER_BAR": (0.004, 0.0910), "OTHER_BUTTONS": (0.004, 0.36),
            "LED": (0.0, 0.0)}
-    for order, item in enumerate(items):
+    # Thetis stacks the items in the saved ORDER (the position written here is not used), so an item that must
+    # not take a row (a warning shown only sometimes) is written with almost no height directly before the item
+    # whose row it shares (item[4] = that row)
+    main = [it for it in items if not (len(it) > 4 and it[4] is not None)]
+    tricks = [it for it in items if len(it) > 4 and it[4] is not None]
+    seq = []
+    for k, it in enumerate(main):
+        seq += [(t, True) for t in tricks if min(t[4], len(main) - 1) == k]
+        seq.append((it, False))
+    for order, (item, trick) in enumerate(seq):
         mt, setting, igid = item[:3]
         x, h = geo[mt]
-        if len(item) > 3:
+        if len(item) > 3 and item[3] is not None:
             h = item[3]          # explicit height (button box: 0.12 per row of buttons)
+        if trick:
+            h = 0.004
         rows.append(("meterIGData_" + igid, "%s|%s|ITEM_GROUP|%.4f|%.4f|%.4f|%.4f|%s|%d"
                      % (igid, cid, x, y, 1 - 2 * x, h, mt, order)))
         rows.append(("meterIGSettings_2_" + igid, setting))
@@ -1491,7 +1528,7 @@ def container_rows(cid, notes, width, height, items, x=100, y=100, nfields=23):
     return rows
 
 
-DEFAULT_BUTTONS = ["opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy",
+DEFAULT_BUTTONS = ["opr", "atu", "ant", "amp", "tune", "atutune", "sot", "dummy", "key",
                    "fault", "lpalarm", "lpmode", "fandn", "fanup"]
 BUTTON_IDS = set(DEFAULT_BUTTONS) | {"gap", "title"}
 
@@ -1535,6 +1572,14 @@ def read_knob_window(path):
     return kw.get("enabled", True) is not False, order, clean_title(kw.get("title"), TITLE_KNOB)
 
 
+def read_meters_window(path):
+    """True/False when the bridge settings say whether to show the KPA1500 Meters window, None if never chosen"""
+    mw = _settings_json(path).get("thetis_meterswin")
+    if isinstance(mw, dict) and isinstance(mw.get("enabled"), bool):
+        return mw["enabled"]
+    return None
+
+
 def read_meter_layout(path):
     """(order, title) of the Telemetry window from the bridge settings, or None"""
     tm = _settings_json(path).get("thetis_meters")
@@ -1557,7 +1602,7 @@ BUTTON_STYLES = {
 
 
 def clean_style(x):
-    return x if x in BUTTON_STYLES else "default"
+    return x if x in BUTTON_STYLES else "legacy"      # Legacy is the default look since 2.47
 
 
 def read_button_layout(path):
@@ -1590,7 +1635,7 @@ def lp100_from_settings(path):
         return None
 
 
-def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
+def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None, meterswin=False):
     T = b.T
     STALE = "DateTimeOffset.UtcNow.ToUnixTimeSeconds() - %%%s.bridge_time%% > 5" % T
     ALIVE = "DateTimeOffset.UtcNow.ToUnixTimeSeconds() - %%%s.bridge_time%% <= 5" % T
@@ -1598,8 +1643,21 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
     CYAN, WHITE, ORANGE, GREEN, RED, TITLE = 0xFF00E5FF, 0xFFFFFFFF, 0xFFFFA500, 0xFF00FF00, 0xFFFF3030, 0xFFFFFF80
     FREQ = "AMP  %%%s.amp_freq_line%%  %%%s.rx_text%%"          # amp frequency (+ warning) + receive level
     FREQ_V = FREQ + "   %%%s.bridge_version%%"                  # ... + bridge version (Telemetry)
-    NOANT = "%%%s.noant_text%%"                                       # 'no antenna?' warning
-    NOANT_ON = "(%%%s.noant%% == 1) && %s" % (T, ALIVE)
+    PRE = "%%%s.warn_pre%%" % T      # empty, or the warning text: put in front of the first line of a window without a title
+
+    # The first line of every window is shown only while the bridge is alive (it goes blank when the data is stale;
+    # a bridge that is closed normally sends '!! BRIDGE STOPPED !!' first). Thetis gives every text line a full row,
+    # so no extra line is added for warnings: they replace the first line.
+    fl = {"pre": "", "gate": None}
+
+    def txt(text, colour, size=12.0, bold=False):
+        return b.text(fl["pre"] + text, colour, size, bold, gate=fl["gate"])
+
+    def first(pre, gate):
+        fl.update(pre=pre, gate=gate)
+
+    def rest():
+        fl.update(pre="", gate=None)
 
     def ig():
         return str(uuid.uuid4())
@@ -1614,31 +1672,35 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
         return s.replace("%", "").replace("{ver}", "%%%s.bridge_version%%" % T)
 
     TEL = {
-        "title": lambda: ("TEXT_OVERLAY", b.text(title_text(tele_title), TITLE, 12.0, True), ig()),
-        "status": lambda: ("TEXT_OVERLAY", b.text("KPA1500  %%%s.amp_power%%  %%%s.amp_mode%%   ATU %%%s.amp_atu%%   ANT %%%s.amp_ant%%"
+        # the title line shows any warning instead of the title (the bridge sends the finished text in head_tele)
+        "title": lambda: ("TEXT_OVERLAY", txt("%%%s.head_tele%%" % T, TITLE, 12.0, True), ig()),
+        "status": lambda: ("TEXT_OVERLAY", txt("KPA1500  %%%s.amp_power%%  %%%s.amp_mode%%   ATU %%%s.amp_atu%%   ANT %%%s.amp_ant%%"
                                                   % (T, T, T, T), CYAN), ig()),
-        "freq": lambda: ("TEXT_OVERLAY", b.text((FREQ % (T, T)) if ver_in_title else (FREQ_V % (T, T, T)),
+        "freq": lambda: ("TEXT_OVERLAY", txt((FREQ % (T, T)) if ver_in_title else (FREQ_V % (T, T, T)),
                                                 GREEN, 12.0, True), ig()),
         "fwd": lambda: ("CUSTOM_METER_BAR", b.bar("amp_fwd", "KPA1500 Fwd", "W", 0, 1750, 1500), ig()),
         "swr": lambda: ("CUSTOM_METER_BAR", b.bar("amp_swr", "KPA1500 SWR", ":1", 1, 3, 2), ig()),
         "drive": lambda: ("CUSTOM_METER_BAR", b.bar("amp_drive", "Drive", "W", 0, 100, 80), ig()),
-        "refl": lambda: ("TEXT_OVERLAY", b.text("Refl %%%s.amp_refl%% W   Gain %%precis=1%%%%%s.amp_gain_db%% dB   Drive from %%%s.amp_drive_src%%"
+        "refl": lambda: ("TEXT_OVERLAY", txt("Refl %%%s.amp_refl%% W   Gain %%precis=1%%%%%s.amp_gain_db%% dB   Drive from %%%s.amp_drive_src%%"
                                                 % (T, T, T), WHITE), ig()),
-        "pa": lambda: ("TEXT_OVERLAY", b.text("PA %%%s.amp_temp%% C   %%precis=1%%%%%s.amp_volts%% V   %%%s.amp_amps%% A   Fan %%%s.amp_fan%% (min %%%s.amp_fan_min%%)"
+        "pa": lambda: ("TEXT_OVERLAY", txt("PA %%%s.amp_temp%% C   %%precis=1%%%%%s.amp_volts%% V   %%%s.amp_amps%% A   Fan %%%s.amp_fan%% (min %%%s.amp_fan_min%%)"
                                               % (T, T, T, T, T), WHITE), ig()),
-        "fault": lambda: ("TEXT_OVERLAY", b.text("Fault: %%%s.amp_fault_text%%   Stby-on-Tune: %%%s.amp_sot_text%%" % (T, T), ORANGE), ig()),
+        "fault": lambda: ("TEXT_OVERLAY", txt("Fault: %%%s.amp_fault_text%%   Stby-on-Tune: %%%s.amp_sot_text%%" % (T, T), ORANGE), ig()),
         "lpp": lambda: ("CUSTOM_METER_BAR", b.bar("lp_pwr", "LP-100A Pwr", "W", 0, 1750, 1500), ig()),
         "lps": lambda: ("CUSTOM_METER_BAR", b.bar("lp_swr", "LP-100A SWR", ":1", 1, 3, 2), ig()),
-        "lptext": lambda: ("TEXT_OVERLAY", b.text("LP-100A  %%precis=1%%R %%%s.lp_r%%  X %%%s.lp_x%%  |Z| %%%s.lp_z%%  RL %%%s.lp_rl%% dB"
+        "lptext": lambda: ("TEXT_OVERLAY", txt("LP-100A  %%precis=1%%R %%%s.lp_r%%  X %%%s.lp_x%%  |Z| %%%s.lp_z%%  RL %%%s.lp_rl%% dB"
                                                   % (T, T, T, T), GREEN), ig()),
-        "gap": lambda: ("TEXT_OVERLAY", b.text(" ", WHITE), ig()),
+        "gap": lambda: ("TEXT_OVERLAY", txt(" ", WHITE), ig()),
     }
-    tele = [TEL[x]() for x in tm_order if x in TEL and not (x.startswith("lp") and not lp100)]
-    tn = ig()
-    tele.append(("TEXT_OVERLAY", b.text(NOANT % T, RED, 12.0, True, gate=led_fourchar(tn)), ig()))
-    tele.append(("TEXT_OVERLAY", b.text(WARN, RED, 12.0, True, gate=led_fourchar(tw)), ig()))
-    tele.append(("LED", b.led(STALE, led_fourchar(tw)), tw))
-    tele.append(("LED", b.led(NOANT_ON, led_fourchar(tn)), tn))
+    TEXT_IDS = {"title", "status", "freq", "refl", "pa", "fault", "lptext", "gap"}
+    tele_ids = [x for x in tm_order if x in TEL and not (x.startswith("lp") and not lp100)]
+    tele, alive_t = [], ig()
+    for n, x in enumerate(tele_ids):
+        if n == 0 and x in TEXT_IDS:
+            first("" if x == "title" else PRE, led_fourchar(alive_t))
+        tele.append(TEL[x]())
+        rest()
+    tele.append(("LED", b.led(ALIVE, led_fourchar(alive_t)), alive_t))
 
     # ---- Controls
     leds = {}
@@ -1659,6 +1721,7 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
         "tune": B("STOP TUNE", "TUNE", "KPA_RADIO_TUNE_STOP", "KPA_RADIO_TUNE", L("RTN", "%%%s.amp_tune_active%% == 1" % T)),
         "atutune": B("STOP ATU", "ATU TUNE", "KPA_ATU_CANCEL", "KPA_ATU_TUNE", L("TUN", "%%%s.amp_atu_tuning%% == 1" % T)),
         "sot": B("SoT ON", "SoT OFF", "KPA_SOT_OFF", "KPA_SOT_ON", L("SOT", "%%%s.amp_sot%% == 1" % T)),
+        "key": B("KEY: SOFT", "KEY: HW", "KPA_KEY_HW", "KPA_KEY_SOFT", L("KEY", "%%%s.key_soft%% == 1" % T)),
         "dummy": B("DUMMY OK", "DUMMY OK", "KPA_DUMMY_OK", "KPA_DUMMY_OK", L("DMY", "%%%s.dummy_ok%% == 1" % T)),
         "fault": B("FAULT - CLR", "NO FAULT", "KPA_CLEAR_FAULT", "KPA_CLEAR_FAULT", L("FLT", "%%%s.amp_fault%% != 0" % T)),
         "lpalarm": B("LP ALARM", "LP ALARM", "KPA_LP_ALARM", "KPA_LP_ALARM"),
@@ -1678,43 +1741,69 @@ def build_containers(b, out4, lp100, layout=None, meters=None, knobwin=None):
     spec = spec[:31]
     rows = max(1, (len(spec) + cols - 1) // cols)
     cw = ig()
-    btn_style = layout[3] if (layout and len(layout) > 3) else "default"
+    btn_style = layout[3] if (layout and len(layout) > 3) else "legacy"
     show_ctitle = (not layout) or ("title" in order)
-    ctrl = [
-        ("TEXT_OVERLAY", b.text(title_text(ctrl_title), TITLE, 12.0, True), ig()),
-    ] if show_ctitle else []
-    ctrl += [
-        ("TEXT_OVERLAY", b.text("%%%s.amp_power%%  %%%s.amp_mode%%   Fan %%%s.amp_fan%% (min %%%s.amp_fan_min%%)   Fault: %%%s.amp_fault_text%%"
-                                % (T, T, T, T, T), CYAN), ig()),
-        ("TEXT_OVERLAY", b.text(FREQ % (T, T), GREEN, 12.0, True), ig()),
-        ("OTHER_BUTTONS", b.buttons(spec, cols, out4, btn_style), ig(), 0.12 * rows * 4.0 / max(cols, 4)),
-    ]
-    cn = ig()
-    ctrl.append(("TEXT_OVERLAY", b.text(NOANT % T, RED, 12.0, True, gate=led_fourchar(cn)), ig()))
-    ctrl.append(("TEXT_OVERLAY", b.text(WARN, RED, 12.0, True, gate=led_fourchar(cw)), ig()))
-    ctrl.append(("LED", b.led(NOANT_ON, led_fourchar(cn)), cn))
+    alive_c = ig()
+    ctrl = []
+    if show_ctitle:
+        first("", led_fourchar(alive_c))
+        ctrl.append(("TEXT_OVERLAY", txt("%%%s.head_ctrl%%" % T, TITLE, 12.0, True), ig()))
+        rest()
+        first("", None)
+    else:
+        first(PRE, led_fourchar(alive_c))
+    ctrl.append(("TEXT_OVERLAY", txt("%%%s.amp_power%% %%%s.amp_mode_s%%  AMP %%%s.amp_freq_line%%  %%%s.rx_text%%"
+                                     % (T, T, T, T), GREEN, 12.0, True), ig()))
+    rest()
+    ctrl.append(("OTHER_BUTTONS", b.buttons(spec, cols, out4, btn_style), ig(), 0.12 * rows * 4.0 / max(cols, 4)))
     for key, (g, cond) in leds.items():
         ctrl.append(("LED", b.led(cond, led_fourchar(g)), g))
-    ctrl.append(("LED", b.led(STALE, led_fourchar(cw)), cw))
+    ctrl.append(("LED", b.led(ALIVE, led_fourchar(alive_c)), alive_c))
 
     # ---- Knob (what the FlexControl knob and buttons do right now)
     knob = None
     if knobwin:
         kw_order, kw_title = knobwin
+        KB = 13.5                       # Knob window text: a little larger so the lines fill the width
+        KBH = text_row(KB)
         KW = {
-            "title": lambda: ("TEXT_OVERLAY", b.text(title_text(kw_title), TITLE, 12.0, True), ig()),
-            "now": lambda: ("TEXT_OVERLAY", b.text("KNOB:  %%%s.knob_now%%" % T, GREEN, 12.0, True), ig()),
-            "knob": lambda: ("TEXT_OVERLAY", b.text("Knob   %%%s.knob_k%%" % T, WHITE), ig()),
-            "b1": lambda: ("TEXT_OVERLAY", b.text("B1     %%%s.knob_b1%%" % T, WHITE), ig()),
-            "b2": lambda: ("TEXT_OVERLAY", b.text("B2     %%%s.knob_b2%%" % T, WHITE), ig()),
-            "b3": lambda: ("TEXT_OVERLAY", b.text("B3     %%%s.knob_b3%%" % T, WHITE), ig()),
-            "status": lambda: ("TEXT_OVERLAY", b.text("%%%s.knob_status%%" % T, CYAN), ig()),
-            "gap": lambda: ("TEXT_OVERLAY", b.text(" ", WHITE), ig()),
+            "title": lambda: ("TEXT_OVERLAY", txt(title_text(kw_title), TITLE, KB, True), ig(), KBH),
+            # the connection ("on COM3") is folded into the top line; a separate status line is only built
+            # when the top line ("now") is not in the list
+            "now": lambda: ("TEXT_OVERLAY", txt("KNOB: %%%s.knob_now%%  %%%s.knob_on%%" % (T, T), GREEN, KB, True), ig(), KBH),
+            "knob": lambda: ("TEXT_OVERLAY", txt("Knob   %%%s.knob_k%%" % T, WHITE, KB), ig(), KBH),
+            "b1": lambda: ("TEXT_OVERLAY", txt("B1     %%%s.knob_b1%%" % T, WHITE, KB), ig(), KBH),
+            "b2": lambda: ("TEXT_OVERLAY", txt("B2     %%%s.knob_b2%%" % T, WHITE, KB), ig(), KBH),
+            "b3": lambda: ("TEXT_OVERLAY", txt("B3     %%%s.knob_b3%%" % T, WHITE, KB), ig(), KBH),
+            "status": lambda: ("TEXT_OVERLAY", txt("%%%s.knob_status%%" % T, CYAN, KB), ig(), KBH),
+            "gap": lambda: ("TEXT_OVERLAY", txt(" ", WHITE), ig()),
         }
         kwl = ig()
-        knob = [KW[x]() for x in kw_order if x in KW]
-        knob.append(("TEXT_OVERLAY", b.text(WARN, RED, 12.0, True, gate=led_fourchar(kwl)), ig()))
-        knob.append(("LED", b.led(STALE, led_fourchar(kwl)), kwl))
+        kids = [x for x in kw_order if x in KW and not (x == "status" and "now" in kw_order)]
+        knob, alive_k = [], ig()
+        for n, x in enumerate(kids):
+            if n == 0:
+                first("", led_fourchar(alive_k))
+            knob.append(KW[x]())
+            rest()
+        knob.append(("LED", b.led(ALIVE, led_fourchar(alive_k)), alive_k))
+    if meterswin:
+        # compact Meters window: one status line and the Fwd and SWR bars (a warning is drawn over the status line)
+        b.compact = True
+        mw_, alive_m = ig(), ig()
+        BARH = 0.091
+        first(PRE, led_fourchar(alive_m))
+        line1 = ("TEXT_OVERLAY", txt("KPA1500  %%%s.amp_power%% %%%s.amp_mode_s%%    Fwd  %%%s.amp_fwd%% W" % (T, T, T),
+                                     GREEN, 12.0, True), ig())
+        rest()
+        meterswin = [
+            line1,
+            ("CUSTOM_METER_BAR", b.bar("amp_fwd", "KPA1500 Fwd", "W", 0, 1750, 1500), ig(), BARH),
+            ("CUSTOM_METER_BAR", b.bar("amp_swr", "KPA1500 SWR", ":1", 1, 3, 2), ig(), BARH),
+            ("LED", b.led(ALIVE, led_fourchar(alive_m)), alive_m),
+        ]
+        b.compact = False
+        return tele, ctrl, knob, meterswin
     return tele, ctrl, knob
 
 
@@ -2004,12 +2093,15 @@ def run_one(a, here):
 
     old_ctrl, old_tele = containers_named(db, "KPA1500 Controls"), containers_named(db, "KPA1500 Telemetry")
     old_knob = containers_named(db, "KPA1500 Knob")
+    old_meters = containers_named(db, "KPA1500 Meters")
     say("")
     say("Containers:")
     say("  KPA1500 Telemetry : %s" % ("found - will be replaced" if old_tele else "will be added"))
     say("  KPA1500 Controls  : %s" % ("found - will be replaced" if old_ctrl else "will be added"))
     if old_knob:
         say("  KPA1500 Knob      : found")
+    if old_meters:
+        say("  KPA1500 Meters    : found")
 
     if a.check:
         say("")
@@ -2017,7 +2109,7 @@ def run_one(a, here):
         return 0
 
     if a.remove:
-        if not (old_ctrl or old_tele or old_knob):
+        if not (old_ctrl or old_tele or old_knob or old_meters):
             say("There are no KPA1500 containers to remove.")
             return 0
         if not ask_yn("Remove the KPA1500 containers from %s?" % pname(), True, a.yes):
@@ -2025,7 +2117,7 @@ def run_one(a, here):
         bk = backup(path, here)
         say("Backup saved: %s" % bk)
         db.begin()
-        for cid in old_ctrl + old_tele + old_knob:
+        for cid in old_ctrl + old_tele + old_knob + old_meters:
             for p in items_of(db, cid):
                 db.delete("meterIGData_" + p[0])
                 db.delete("meterIGSettings_2_" + p[0])
@@ -2048,8 +2140,18 @@ def run_one(a, here):
         kw_on = ask_yn("Add the KPA1500 Knob window (shows what a FlexControl tuning knob and its buttons "
                        "do right now)?", bool(old_knob), a.yes)
         ANSWERS["kw"] = kw_on
+    mw_on = read_meters_window(spath)
+    if mw_on is not None:
+        ANSWERS["mw"] = mw_on
+    elif "mw" in ANSWERS:
+        mw_on = ANSWERS["mw"]
+    else:
+        mw_on = ask_yn("Add the KPA1500 Meters window (a small window with just the forward power and SWR bars)?",
+                       bool(old_meters), a.yes)
+        ANSWERS["mw"] = mw_on
     say("")
     say("KPA1500 Knob window: %s" % ("yes (title '%s')" % kw_title if kw_on else "no"))
+    say("KPA1500 Meters window: %s" % ("yes" if mw_on else "no"))
     if meters:
         say("Telemetry window: your order from the bridge settings (title '%s'):" % meters[1])
         say("  " + ", ".join(meters[0]))
@@ -2127,34 +2229,49 @@ def run_one(a, here):
 
     # containers (keep the old ids so windows stay where they were)
     b = Builder(lib, in_guid, in4, json_out=jflav)
-    tele, ctrl, knob = build_containers(b, out4, lp100, layout, meters, (kw_order, kw_title) if kw_on else None)
+    tele, ctrl, knob, mwin = build_containers(b, out4, lp100, layout, meters, (kw_order, kw_title) if kw_on else None,
+                                              meterswin=True)
     cid_t = old_tele[0] if old_tele else str(uuid.uuid4())
     cid_c = old_ctrl[0] if old_ctrl else str(uuid.uuid4())
     cid_k = (old_knob[0] if old_knob else str(uuid.uuid4())) if knob else None
-    for cid in old_ctrl + old_tele + old_knob:
+    cid_m = (old_meters[0] if old_meters else str(uuid.uuid4())) if mw_on else None
+    for cid in old_ctrl + old_tele + old_knob + old_meters:
         for p in items_of(db, cid):
             db.delete("meterIGData_" + p[0])
             db.delete("meterIGSettings_2_" + p[0])
-        if cid not in (cid_t, cid_c, cid_k):
+        if cid not in (cid_t, cid_c, cid_k, cid_m):
             db.delete("meterContData_" + cid)
             db.delete("meterData_" + cid)
-    todo = [(cid_t, TELE_NAME, 360, 370, tele, old_tele, 100, 100), (cid_c, CTRL_NAME, 420, 380, ctrl, old_ctrl, 100, 100)]
+    # new windows get a width; the height of every window is always fitted to what they show
+    # (so there are no blank lines at the bottom); the width of an existing window is kept
+    todo = [(cid_t, TELE_NAME, 360, None, tele, old_tele, 100, 100), (cid_c, CTRL_NAME, 308, None, ctrl, old_ctrl, 100, 100)]
     if knob:
-        todo.append((cid_k, KNOB_NAME, 400, 200, knob, old_knob, 100, 520))
+        todo.append((cid_k, KNOB_NAME, 228, None, knob, old_knob, 100, 520))
+    if mw_on:
+        todo.append((cid_m, METERS_NAME, 260, None, mwin, old_meters, 560, 100))
     for cid, name, w, h, items, old, x, y in todo:
+        if old:
+            fw = db.val("meterContData_" + cid).split("|")
+            w = int(fw[4]) if fw[4].isdigit() else w
+        if h is None:
+            h = fit_height(w, items)
         rows = container_rows(cid, name, w, h, items, x, y, 24 if jflav else 23)
         if old:
             f = db.val("meterContData_" + cid).split("|")
             f[15] = name
-            db.set_val("meterContData_" + cid, "|".join(f))
+            f[4], f[5] = str(w), str(h)
+            if cid == cid_c:    # the Controls window background goes with the button look
+                st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "legacy")
+                f[12] = st_["back"] if st_ else "255.0.0.0"
+            db.set_val("meterContData_" + cid, "|".join(f))     # one edit per row (a second one would undo this)
             db.insert_after("meterData_" + cid, rows[2:])
         else:
+            if cid == cid_c:
+                rf = rows[0][1].split("|")
+                st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "legacy")
+                rf[12] = st_["back"] if st_ else "255.0.0.0"
+                rows[0] = (rows[0][0], "|".join(rf))
             db.insert_at_options_end(rows)
-        if cid == cid_c:        # the Controls window background goes with the button look
-            f = db.val("meterContData_" + cid).split("|")
-            st_ = BUTTON_STYLES.get(layout[3] if layout and len(layout) > 3 else "default")
-            f[12] = st_["back"] if st_ else "255.0.0.0"
-            db.set_val("meterContData_" + cid, "|".join(f))
     write_db(db)
 
     say("")
@@ -2163,7 +2280,8 @@ def run_one(a, here):
     for pl in plan:
         if pl.startswith("fix_out_port:"):
             say("  Button port moved to %s (Windows had reserved the old one)." % pl.split(":")[1])
-    say("  Containers: %s, %s%s" % (TELE_NAME, CTRL_NAME, (", " + KNOB_NAME) if knob else ""))
+    say("  Containers: %s, %s%s%s" % (TELE_NAME, CTRL_NAME, (", " + KNOB_NAME) if knob else "",
+                                    (", " + METERS_NAME) if mw_on else ""))
     say("")
     say("If anything looks wrong: Undo_Thetis_Containers.bat puts the backup back.")
     say("")
